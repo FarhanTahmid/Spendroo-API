@@ -1,0 +1,11 @@
+{% extends "account/email/base_message.txt" %}
+{% load i18n %}
+
+{% block content %}{% autoescape off %}{% blocktrans %}You are receiving this email because you or someone else tried to sign up for an
+account using email address:
+
+{{ email }}
+
+However, an account using that email address already exists. Open the Spendroo
+app and log in. If you have forgotten your password, tap "Forgot password?" on
+the login screen.{% endblocktrans %}{% endautoescape %}{% endblock content %}

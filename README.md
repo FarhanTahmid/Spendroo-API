@@ -37,6 +37,11 @@ Tests: `python manage.py test`.
   Login returns `meta.session_token`; send it on every request as `X-Session-Token`.
   Log in with `{"email": ...}` or `{"username": ...}` plus `password` (one of the two, not both).
   Password change is `POST /_allauth/app/v1/account/password/change` with `current_password` and `new_password`.
+  Google sign-in is `POST /_allauth/app/v1/auth/provider/token` with
+  `{"provider": "google", "process": "login", "token": {"client_id": ..., "id_token": ...}}`.
+  The server checks the token's signature, issuer, expiry and that it was made for one of the
+  `*_OAUTH2_CLIENT_ID`s in `.env` (the app uses the web one). The first sign-in makes the account;
+  a Google-verified email that already has an account signs into that account and links Google to it.
 - `/api/v1/sync/pull/?workspace=<id>&since=<seq>` changes since a cursor, per table, tombstones included.
 - `/api/v1/sync/push/` a batch of client mutations (`upsert`/`delete`), each with a client UUID so retries apply once.
   Upserts carry only the changed columns, so concurrent edits to different fields both survive.

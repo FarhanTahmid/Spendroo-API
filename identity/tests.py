@@ -3,10 +3,15 @@ import os
 import re
 import shutil
 import tempfile
+import time
 from io import BytesIO
 from unittest import mock
 
+import jwt
 from allauth.account.adapter import get_adapter
+from allauth.account.models import EmailAddress
+from allauth.socialaccount.models import SocialAccount
+from cryptography.hazmat.primitives.asymmetric import rsa
 from django.core import mail
 from django.core.cache import cache
 from django.core.files.uploadedfile import SimpleUploadedFile
@@ -205,7 +210,11 @@ class UsernameGenerationTests(AuthTestCase):
         self.signup('erin@example.com')
         with self.assertRaises(IntegrityError), transaction.atomic():
             AppUser.objects.create_user(email='erin@example.com', password=PASSWORD)
-        self.post('/signup', {'email': 'erin@example.com', 'password': PASSWORD})
+        cache.clear()  # the first sign-up's code counts against the email rate limit
+        response = self.post('/signup', {'email': 'erin@example.com', 'password': PASSWORD})
+        # Answered like a new sign-up; the owner gets a mail instead of a code
+        self.assertEqual(response.status_code, 401, response.content)
+        self.assertIn('already exists', mail.outbox[-1].body)
         self.assertEqual(AppUser.objects.filter(email__iexact='erin@example.com').count(), 1)
 
     def test_database_rejects_case_only_duplicate(self):
@@ -444,3 +453,175 @@ class PasswordChangeExtraTests(AuthTestCase):
         token = self.signup()
         self.change(token, {'current_password': PASSWORD, 'new_password': 'new-long-pass-456'})
         self.assertTrue(CRUDLog.objects.filter(operation='password_changed').exists())
+
+
+GOOGLE_CLIENT_ID = 'spendroo-test.apps.googleusercontent.com'
+# Stand-ins for Google's signing key and for somebody else's
+GOOGLE_KEY = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+OTHER_KEY = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+
+
+@override_settings(SOCIALACCOUNT_PROVIDERS={'google': {'APPS': [{'client_id': GOOGLE_CLIENT_ID, 'secret': ''}]}})
+class GoogleSignInTests(AuthTestCase):
+    """
+    The app sends the ID token Google gave it. Only the download of Google's
+    public keys is faked: the signature, issuer, audience and expiry are checked for real.
+    """
+    def setUp(self):
+        super().setUp()
+        patcher = mock.patch(
+            'allauth.socialaccount.internal.jwtkit.fetch_key',
+            return_value=('RS256', GOOGLE_KEY.public_key()),
+        )
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def id_token(self, email='grace@gmail.com', sub='google-uid-1', key=GOOGLE_KEY, **claims):
+        now = int(time.time())
+        payload = {
+            'iss': 'https://accounts.google.com', 'aud': GOOGLE_CLIENT_ID, 'sub': sub,
+            'email': email, 'email_verified': True, 'given_name': 'Grace', 'family_name': 'Hopper',
+            'iat': now, 'exp': now + 3600,
+        }
+        payload.update(claims)
+        return jwt.encode(payload, key, algorithm='RS256', headers={'kid': 'test-key'})
+
+    def google(self, id_token=None, client_id=GOOGLE_CLIENT_ID, **token):
+        token = {'client_id': client_id, 'id_token': id_token or self.id_token(), **token}
+        return self.post('/provider/token', {'provider': 'google', 'process': 'login', 'token': token})
+
+    def me(self, response):
+        token = response.json()['meta']['session_token']
+        return self.client.get('/api/v1/me/', headers={'X-Session-Token': token})
+
+    def test_new_user_is_signed_up_and_signed_in(self):
+        response = self.google()
+        self.assertEqual(response.status_code, 200, response.content)
+        self.assertTrue(response.json()['meta']['is_authenticated'])
+
+        me = self.me(response)
+        self.assertEqual(me.status_code, 200)
+        self.assertEqual(me.data['email'], 'grace@gmail.com')
+        self.assertEqual(me.data['username'], 'grace')
+        self.assertEqual(me.data['full_name'], 'Grace Hopper')
+        self.assertFalse(me.data['has_password'])
+
+        user = AppUser.objects.get(email='grace@gmail.com')
+        self.assertTrue(EmailAddress.objects.get(user=user).verified)
+        self.assertEqual(SocialAccount.objects.get(user=user).uid, 'google-uid-1')
+        self.assertEqual(Workspace.objects.get(owner=user).kind, 'personal')
+        self.assertEqual(len(mail.outbox), 0)  # nothing to verify: Google did
+
+    def test_signing_in_again_finds_the_same_account(self):
+        self.google()
+        # The Google account is the same one even when its address changed
+        response = self.google(self.id_token(email='grace.new@gmail.com'))
+        self.assertEqual(response.status_code, 200, response.content)
+        self.assertEqual(AppUser.objects.count(), 1)
+        self.assertEqual(self.me(response).data['email'], 'grace@gmail.com')
+
+    def test_taken_username_gets_digits(self):
+        AppUser.objects.create_user(email='grace@example.com', password=PASSWORD)
+        self.google()
+        self.assertRegex(AppUser.objects.get(email='grace@gmail.com').username, r'^grace\d{4}$')
+
+    def test_same_email_as_a_password_account_signs_into_it(self):
+        self.signup('grace@gmail.com')
+        user = AppUser.objects.get(email='grace@gmail.com')
+
+        response = self.google()
+        self.assertEqual(response.status_code, 200, response.content)
+        self.assertEqual(AppUser.objects.count(), 1)
+        self.assertEqual(self.me(response).data['id'], str(user.pk))
+        self.assertTrue(self.me(response).data['has_password'])
+        self.assertEqual(SocialAccount.objects.get(provider='google').user, user)
+        self.assertTrue(CRUDLog.objects.filter(operation='google_connected').exists())
+
+        # The password still works, and so does Google the next time
+        self.assertEqual(self.post('/login', {'email': 'grace@gmail.com', 'password': PASSWORD}).status_code, 200)
+        self.assertEqual(self.google().status_code, 200)
+
+    def test_account_that_never_verified_the_email_loses_its_password(self):
+        # Someone else may have signed up with this address and be waiting with the password
+        self.post('/signup', {'email': 'grace@gmail.com', 'password': PASSWORD})
+        self.client = APIClient()
+
+        response = self.google()
+        self.assertEqual(response.status_code, 200, response.content)
+        self.assertEqual(AppUser.objects.count(), 1)
+        self.assertFalse(self.me(response).data['has_password'])
+        # Google vouched for the address, so no code is asked for
+        self.assertTrue(EmailAddress.objects.get(email='grace@gmail.com').verified)
+        self.client = APIClient()
+        self.assertEqual(self.post('/login', {'email': 'grace@gmail.com', 'password': PASSWORD}).status_code, 400)
+
+    def test_email_google_has_not_verified_does_not_reach_an_existing_account(self):
+        self.signup('grace@gmail.com')
+        self.client = APIClient()
+        cache.clear()  # the sign-up's own code counts against the email rate limit
+        response = self.google(self.id_token(email_verified=False))
+        # Answered like a new sign-up, so the address is not given away
+        self.assertEqual(response.status_code, 401, response.content)
+        self.assertFalse(response.json().get('meta', {}).get('is_authenticated', False))
+        self.assertFalse(SocialAccount.objects.exists())
+        # The owner is told, without a code that would let the caller in
+        self.assertIn('already exists', mail.outbox[-1].body)
+
+    def test_new_email_google_has_not_verified_needs_the_emailed_code(self):
+        response = self.google(self.id_token(email_verified=False))
+        self.assertEqual(response.status_code, 401, response.content)
+        self.assertIn(self.me(response).status_code, (401, 403))
+        token = response.json()['meta']['session_token']
+        response = self.post('/email/verify', {'key': code_from_last_email()}, token=token)
+        self.assertEqual(response.status_code, 200, response.content)
+
+    def test_tokens_that_are_not_ours_are_refused(self):
+        now = int(time.time())
+        bad = {
+            'made for another app': self.id_token(aud='someone-else.apps.googleusercontent.com'),
+            'not from Google': self.id_token(iss='https://accounts.example.com'),
+            'expired': self.id_token(iat=now - 7200, exp=now - 3600),
+            'signed by another key': self.id_token(key=OTHER_KEY),
+            'not a token': 'nonsense',
+        }
+        for why, id_token in bad.items():
+            with self.subTest(why):
+                response = self.google(id_token)
+                self.assertEqual(response.status_code, 400, response.content)
+                self.assertNotIn('session_token', response.json().get('meta', {}))
+        self.assertFalse(AppUser.objects.exists())
+
+    def test_token_cannot_be_used_twice(self):
+        id_token = self.id_token(jti='once-only')
+        self.assertEqual(self.google(id_token).status_code, 200)
+        self.client = APIClient()
+        self.assertEqual(self.google(id_token).status_code, 400)
+
+    def test_unknown_client_id_is_refused(self):
+        response = self.google(client_id='unknown.apps.googleusercontent.com')
+        self.assertEqual(response.status_code, 400, response.content)
+        self.assertFalse(AppUser.objects.exists())
+
+    def test_id_token_is_required(self):
+        response = self.post('/provider/token', {
+            'provider': 'google', 'process': 'login', 'token': {'client_id': GOOGLE_CLIENT_ID},
+        })
+        self.assertEqual(response.status_code, 400, response.content)
+
+    @override_settings(SOCIALACCOUNT_PROVIDERS={'google': {'APPS': []}})
+    def test_refused_when_no_client_id_is_configured(self):
+        self.assertEqual(self.google().status_code, 400)
+        self.assertFalse(AppUser.objects.exists())
+
+    def test_google_account_can_set_a_first_password(self):
+        token = self.google().json()['meta']['session_token']
+        response = self.client.post(
+            '/_allauth/app/v1/account/password/change', {'new_password': 'first-long-pass-123'},
+            format='json', headers={'X-Session-Token': token},
+        )
+        self.assertEqual(response.status_code, 200, response.content)
+        self.assertTrue(CRUDLog.objects.filter(operation='password_set').exists())
+        self.client = APIClient()
+        login = self.post('/login', {'email': 'grace@gmail.com', 'password': 'first-long-pass-123'})
+        self.assertEqual(login.status_code, 200, login.content)
+        self.assertTrue(self.me(login).data['has_password'])

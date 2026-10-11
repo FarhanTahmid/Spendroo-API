@@ -179,6 +179,11 @@ SOCIALACCOUNT_PROVIDERS = {
         ],
     }
 }
+# A Google-verified email that matches an existing account signs into it and links
+# Google to it. allauth removes the password first when that account never verified
+# its email, so whoever made it cannot get back in.
+SOCIALACCOUNT_EMAIL_AUTHENTICATION = True
+SOCIALACCOUNT_EMAIL_AUTHENTICATION_AUTO_CONNECT = True
 
 # Email. EMAIL_BACKEND is set per environment; the worker delivers queued
 # mail through EMAIL_DELIVERY_BACKEND unless an SMTP account is set up in the admin.
