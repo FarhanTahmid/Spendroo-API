@@ -1,0 +1,23 @@
+<section class="block">
+  <div class="heading">
+    <h3>{{ table.title }}</h3>
+    {% if table.amounts_in %}<span class="unit">{{ table.amounts_in }}</span>{% endif %}
+  </div>
+  {% if table.note %}<p class="note">{{ table.note }}</p>{% endif %}
+  {% if table.rows or table.first %}
+  <table class="data">
+    <colgroup>{% for column in table.columns %}<col style="width: {{ column.width }}%">{% endfor %}</colgroup>
+    <thead>
+      <tr>{% for column in table.columns %}<th class="{{ column.kind }}">{{ column.label }}</th>{% endfor %}</tr>
+    </thead>
+    <tbody>
+      {% if table.first %}{% include "reports/row.html" with row=table.first %}{% endif %}
+      {% for row in table.rows %}{% include "reports/row.html" %}{% endfor %}
+      {% if table.total %}{% include "reports/row.html" with row=table.total %}{% endif %}
+    </tbody>
+  </table>
+  {% if not table.rows and table.empty %}<p class="empty">{{ table.empty }}</p>{% endif %}
+  {% else %}
+  <p class="empty">{{ table.empty }}</p>
+  {% endif %}
+</section>

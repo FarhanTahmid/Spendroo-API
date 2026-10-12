@@ -11,6 +11,7 @@ Django 5.2 + Django REST Framework on PostgreSQL. One deployable plus a backgrou
 | `cashbook` | Cashbooks, entries, categories, payment methods, reports. |
 | `ledger_personal` | Personal mode: accounts, categories, transactions (incl. transfers), budgets. |
 | `sync` | Offline sync for the app: change log pull and idempotent mutation push. |
+| `reports` | Reports to download as PDF or Excel: personal, one account, one cashbook, a whole business. |
 | `billing` | Plans, limits, subscriptions, promo codes and campaigns, run from the admin. See [docs/billing.md](docs/billing.md). |
 | `notifications` | Email accounts, email queue backend and task. |
 | `audit` | Request logging, `CRUDLog`. |
@@ -55,6 +56,11 @@ Tests: `python manage.py test`.
 - `/api/v1/me/avatar/` `POST` (multipart `file`) sets the picture, `DELETE` removes it, `GET` serves it.
   The app crops it; the server checks it is a JPEG, PNG or WEBP of 5 MB or less and stores a 512px JPEG without metadata.
 - `POST /api/v1/workspaces/` creates a business; an optional client `id` makes retries return the same workspace.
+- `GET /api/v1/reports/personal/`, `reports/accounts/<id>/`, `reports/cashbooks/<id>/`, `reports/businesses/<id>/`
+  `?file_type=pdf|xlsx&period=this_month|last_month|last_3_months|this_year|custom&from&to&lang=en|bn` a report as a file.
+  A PDF of a preset period is for every plan; Excel (`reports.excel`) and a custom report (`reports.custom_range`) are plan
+  flags, refused with 402. A custom report has chosen dates and may be narrowed with `&type=expense,income` (or
+  `cash_in,cash_out`) and `&category=<id>,<id>,none`; narrowed, it shows money in, money out and net, without balances. `X-Report-Reference` is the number printed in the footer and kept in the admin under Report downloads.
 - `/api/v1/billing/` the user's plan and what it gives, public plans, promo codes, offers. See [docs/billing.md](docs/billing.md).
 - `/health/` liveness; `/health/?db=1` also checks the database.
 
@@ -79,5 +85,8 @@ Tests: `python manage.py test`.
 - **Budgets** are per expense category: one recurring (`month` empty) plus optional one-month overrides.
 - **Transfers** are two transactions sharing `transfer_group_id`, moving money in opposite directions.
 - **Edit history** is written by database triggers (django-pghistory) into `*Event` tables.
+- **Reports** are built once as a `reports.document.Report` and rendered twice (`render/pdf.py`, `render/xlsx.py`),
+  so the two files of one report cannot disagree. Amounts are never converted: each currency gets its own totals.
+  The PDF needs Pango on the machine (`apt install libpango-1.0-0 libpangoft2-1.0-0`; on Windows see WeasyPrint's docs).
 - **Secrets stored in the database** use `spendroo.fields.EncryptedTextField`.
 - The **database role** must not be a PostgreSQL superuser in production; superusers skip row-level security.

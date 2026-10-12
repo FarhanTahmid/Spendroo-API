@@ -63,12 +63,19 @@ class F:
     TEAM_SEATS = FeatureKey(
         'team.seats', LIMIT, 'Team members per workspace', 'People other than the owner.',
     )
-    CASHBOOK_REPORT_RANGE = FeatureKey('cashbook.report_range', FLAG, 'Cashbook report: date ranges')
-    CASHBOOK_REPORT_EXPORT = FeatureKey('cashbook.report_export', FLAG, 'Cashbook report: PDF and Excel export')
     AUDIT_TRAIL = FeatureKey('history.audit_trail', FLAG, 'Owner-visible edit history')
     ENTRY_CUSTOM_FIELDS = FeatureKey('entries.custom_fields', FLAG, 'Custom fields on entries')
     STORAGE_ATTACHMENTS_MB = FeatureKey(
         'storage.attachments_mb', LIMIT, 'Bill attachments', 'Total size of attached files.', unit='MB',
+    )
+
+    # Reports to download (reports/). A PDF of a preset period is for every plan.
+    REPORTS_EXCEL = FeatureKey(
+        'reports.excel', FLAG, 'Reports as Excel', 'Download any report as an Excel workbook. PDF is always included.',
+    )
+    REPORTS_CUSTOM_RANGE = FeatureKey(
+        'reports.custom_range', FLAG, 'Custom reports',
+        'A report between two chosen dates, narrowed to chosen kinds of transaction and categories.',
     )
 
     # AI

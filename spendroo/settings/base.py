@@ -89,6 +89,7 @@ LOCAL_APPS=[
     'ledger_personal',
     'sync',
     'billing',
+    'reports',
 ]
 
 INSTALLED_APPS = DJANGO_APPS + THIRD_PARTY_APPS + LOCAL_APPS
@@ -278,6 +279,8 @@ REST_FRAMEWORK = {
         'promo_redeem': '10/hour',
         'billing_keep': '30/hour',
         'billing_events': '300/hour',
+        # Each one lays out a whole document
+        'reports': '30/hour',
     },
     'DEFAULT_SCHEMA_CLASS': 'drf_spectacular.openapi.AutoSchema',
     # DRF's own, plus a note of every plan refusal for the admin dashboard
@@ -372,6 +375,9 @@ UNFOLD = {
                      'permission': _can('billing.view_funnelevent')},
                     {'title': 'Usage', 'icon': 'data_usage', 'link': _admin_link('billing_usagecounter_changelist'),
                      'permission': _can('billing.view_usagecounter')},
+                    {'title': 'Report downloads', 'icon': 'download',
+                     'link': _admin_link('reports_reportdownload_changelist'),
+                     'permission': _can('reports.view_reportdownload')},
                     {'title': 'Store events', 'icon': 'receipt_long',
                      'link': _admin_link('billing_billingevent_changelist'),
                      'permission': _can('billing.view_billingevent')},
@@ -554,6 +560,10 @@ LOGGING = {
             'propagate': False,  # Don't duplicate Django's internal logging
         },
         
+        # The PDF library narrates every step of every report at INFO
+        'weasyprint': {'level': 'WARNING'},
+        'fontTools': {'level': 'WARNING'},
+
         # Root logger - catches any unrouted log messages
         # Fallback for any logging not handled by specific loggers
         '': {

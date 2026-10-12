@@ -19,7 +19,8 @@ argon2-cffi==25.1.0
 cryptography==50.0.2
 python-decouple==3.8
 python-dotenv==1.1.1
-reportlab==4.4.4
+# PDF reports from HTML; shapes Bangla. Needs Pango on the machine (see Dockerfile)
+weasyprint==70.0
 openpyxl==3.1.5
 gunicorn==26.2.0
 # Windows-friendly WSGI server for staging on a developer machine (docs/staging-local.md)

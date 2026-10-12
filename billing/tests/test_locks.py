@@ -368,10 +368,10 @@ class GateHelperTests(BillingTestCase):
             gates.check_limit(self.shop, F.BUSINESS_WORKSPACES)
 
     def test_allows_answers_without_refusing(self):
-        self.assertFalse(gates.allows(self.shop, F.CASHBOOK_REPORT_EXPORT))
+        self.assertFalse(gates.allows(self.shop, F.REPORTS_EXCEL))
         grant_plan(self.alice, 'plus')
-        self.assertTrue(gates.allows(self.shop, F.CASHBOOK_REPORT_EXPORT))
-        self.assertFalse(gates.allows(self.bob, F.CASHBOOK_REPORT_EXPORT))
+        self.assertTrue(gates.allows(self.shop, F.REPORTS_EXCEL))
+        self.assertFalse(gates.allows(self.bob, F.REPORTS_EXCEL))
 
     def test_zero_cannot_be_chosen_from(self):
         Membership.objects.create(workspace=self.shop, user=self.bob, role=Membership.ROLE_STAFF)

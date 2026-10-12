@@ -51,11 +51,12 @@ VALUES = {
     F.BUSINESS_WORKSPACES: (1, 2, 5),
     F.BUSINESS_CASHBOOKS: (2, UNLIMITED, UNLIMITED),
     F.TEAM_SEATS: (0, 0, 5),
-    F.CASHBOOK_REPORT_RANGE: (False, True, True),
-    F.CASHBOOK_REPORT_EXPORT: (False, True, True),
     F.AUDIT_TRAIL: (False, False, True),
     F.ENTRY_CUSTOM_FIELDS: (False, False, True),
     F.STORAGE_ATTACHMENTS_MB: (0, 1024, 10240),
+
+    F.REPORTS_EXCEL: (False, True, True),
+    F.REPORTS_CUSTOM_RANGE: (False, True, True),
 
     F.AI_CREDITS: (15, 300, 1000),
     F.STATEMENT_PDF_PAGES: (5, 30, 150),

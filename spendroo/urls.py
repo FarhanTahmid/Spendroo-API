@@ -29,6 +29,7 @@ api_v1_patterns = [
     path('ledger/',include('ledger_personal.urls')),
     path('sync/',include('sync.urls')),
     path('billing/',include('billing.api.urls')),
+    path('reports/',include('reports.urls')),
     path('schema/', SpectacularAPIView.as_view(), name='schema'),
     path('docs/', SpectacularSwaggerView.as_view(url_name='schema'), name='docs'),
 ]

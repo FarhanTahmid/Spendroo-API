@@ -1,0 +1,91 @@
+@font-face { font-family: Anek; src: url("{{ assets }}/fonts/AnekBangla-Regular.ttf"); font-weight: 400; }
+@font-face { font-family: Anek; src: url("{{ assets }}/fonts/AnekBangla-SemiBold.ttf"); font-weight: 600; }
+@font-face { font-family: Anek; src: url("{{ assets }}/fonts/AnekBangla-Bold.ttf"); font-weight: 700; }
+
+@page {
+  size: A4;
+  margin: 14mm 13mm 19mm 13mm;
+  @bottom-left { content: {{ footer_left|safe }}; width: 36%; {{ footer_style|safe }} }
+  @bottom-center { content: {{ footer_center|safe }}; width: 40%; {{ footer_style|safe }} }
+  @bottom-right {
+    content: {{ page_word|safe }} counter(page, {{ counter_style }}) {{ of_word|safe }} counter(pages, {{ counter_style }});
+    width: 24%; {{ footer_style|safe }}
+  }
+}
+
+html { font-family: Anek, sans-serif; font-size: 8.6pt; line-height: 1.35; color: #0E1B30; }
+body { margin: 0; }
+
+/* On every page, behind the figures */
+.watermark {
+  position: fixed; top: 96mm; left: 22mm; width: 140mm;
+  opacity: 0.06; transform: rotate(-28deg); z-index: -1;
+}
+
+.band {
+  background: #0B2D5E; color: #fff; border-radius: 3mm; padding: 5mm 6mm;
+  display: flex; align-items: center; justify-content: space-between;
+}
+.band .logo { height: 13mm; }
+.band .name { text-align: right; }
+.band .title { font-size: 9.5pt; font-weight: 600; color: #F5B530; letter-spacing: 0.4pt; text-transform: uppercase; }
+.band .subject { font-size: 17pt; font-weight: 700; line-height: 1.2; }
+.covers { margin: 2.5mm 1mm 0; color: #5B6B84; font-size: 9pt; }
+
+table { border-collapse: collapse; width: 100%; }
+.meta { margin-top: 3mm; table-layout: fixed; }
+.meta td { padding: 0 1mm; font-weight: 600; vertical-align: top; }
+.meta span, .tile span { display: block; font-size: 7.4pt; font-weight: 400; color: #5B6B84; }
+
+h2 {
+  font-size: 11pt; font-weight: 700; color: #0B2D5E; margin: 6.5mm 0 2.5mm;
+  border-bottom: 1.2pt solid #F5B530; padding-bottom: 1mm; break-after: avoid;
+}
+h3 { font-size: 9.6pt; font-weight: 700; margin: 0; }
+
+.currency { font-weight: 700; color: #0B2D5E; margin: 2mm 1mm 1mm; }
+.tiles { table-layout: fixed; border-collapse: separate; border-spacing: 2mm 0; margin: 0 -2mm 2mm; width: calc(100% + 4mm); }
+.tile { background: rgba(11, 45, 94, 0.05); border-radius: 2mm; padding: 3mm 3.2mm; }
+.tile b { display: block; font-size: 11.5pt; font-weight: 700; margin-top: 0.6mm; }
+.tile.in b { color: #17804A; }
+.tile.out b { color: #D93F4C; }
+/* The figure a reader is looking for */
+.tile.closing { background: #0B2D5E; }
+.tile.closing span { color: #B4C6E4; }
+.tile.closing b { color: #fff; }
+
+.how { background: #FFF8E6; border-left: 2.4pt solid #F5B530; border-radius: 1.5mm; padding: 3mm 4mm; margin-top: 3mm; break-inside: avoid; }
+.how ul { margin: 1.2mm 0 0; padding-left: 4.5mm; }
+.how li { margin: 0.5mm 0; }
+
+/* A custom report says what it leaves out before it shows a single figure */
+.filtered { border: 1pt solid #F5B530; border-radius: 2mm; padding: 3mm 4mm; margin-top: 4mm; break-inside: avoid; }
+.filtered h3 { color: #0B2D5E; }
+.filtered p { margin: 0.5mm 0 1.5mm; color: #5B6B84; font-size: 7.8pt; }
+.filtered div { font-weight: 600; margin-top: 0.8mm; }
+.filtered span { display: inline-block; min-width: 24mm; font-weight: 400; color: #5B6B84; }
+
+.block { margin-bottom: 5mm; }
+.heading { display: flex; align-items: baseline; justify-content: space-between; break-after: avoid; }
+.unit { font-size: 7.6pt; color: #5B6B84; }
+.note { margin: 0.6mm 0 0; color: #5B6B84; font-size: 7.8pt; break-after: avoid; }
+.empty { margin: 1.5mm 0 0; color: #5B6B84; font-style: italic; }
+
+.data { table-layout: fixed; margin-top: 1.5mm; }
+.data thead { display: table-header-group; }
+.data thead tr { background: #0B2D5E; }
+.data th {
+  background: #0B2D5E; color: #fff; font-weight: 600; font-size: 7.8pt; text-align: left;
+  padding: 1.6mm 1.5mm;
+}
+.data td { padding: 1.35mm 1.5mm; border-bottom: 0.4pt solid #E2E8F1; vertical-align: top; overflow-wrap: anywhere; }
+/* Tinted, not painted over: the watermark shows through every row */
+.data tbody tr:nth-child(even) td { background: rgba(11, 45, 94, 0.025); }
+.data tr { break-inside: avoid; }
+.data .money, .data .count, .data .share { text-align: right; white-space: nowrap; }
+.data td.date { white-space: nowrap; }
+.data td.in { color: #17804A; }
+.data td.out { color: #D93F4C; }
+.data td.balance { font-weight: 600; }
+.data tr.edge td { font-weight: 700; background: rgba(11, 45, 94, 0.07); }
+.data tr.total td { border-top: 0.9pt solid #0B2D5E; border-bottom: none; }

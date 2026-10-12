@@ -279,27 +279,6 @@ class SeatLimitTests(BillingTestCase):
         self.assertEqual(response.status_code, 201, response.data)
 
 
-class ReportExportTests(BillingTestCase):
-    def setUp(self):
-        super().setUp()
-        self.book = CashBook.objects.create(workspace=self.shop, book_name='Till')
-        self.stats = f'{BOOKS}{self.book.id}/stats/'
-
-    def test_export_is_a_paid_feature_and_the_on_screen_summary_is_not(self):
-        self.assertEqual(self.alice_client.get(f'{self.stats}summary/').status_code, 200)
-        for kind in ('pdf', 'excel'):
-            response = self.alice_client.get(f'{self.stats}report/{kind}/')
-            self.assertEqual(response.status_code, 402)
-            self.assertEqual(response.data['feature'], 'cashbook.report_export')
-        grant_plan(self.alice, 'plus')
-        for kind in ('pdf', 'excel'):
-            self.assertEqual(self.alice_client.get(f'{self.stats}report/{kind}/').status_code, 200)
-
-    def test_someone_without_access_learns_nothing_about_the_plan(self):
-        # 403 from the view, or 404 where row-level security hides the book first
-        self.assertIn(self.bob_client.get(f'{self.stats}report/pdf/').status_code, (403, 404))
-
-
 class CustomFieldTests(BillingTestCase):
     def setUp(self):
         super().setUp()

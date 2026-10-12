@@ -124,19 +124,19 @@ class OverrideTests(BillingTestCase):
         set_limit(self.alice, F.PERSONAL_ACCOUNTS, 6, mode=raise_to)
         set_limit(self.alice, F.BUSINESS_WORKSPACES, 1, mode=raise_to)
         set_flag(self.alice, F.BUDGET_MONTH_OVERRIDE, True, mode=raise_to)
-        set_flag(self.alice, F.CASHBOOK_REPORT_EXPORT, False, mode=raise_to)
+        set_flag(self.alice, F.REPORTS_EXCEL, False, mode=raise_to)
 
         free = resolve(self.alice)
         self.assertEqual(free.limit_of(F.PERSONAL_ACCOUNTS), 6)
         self.assertEqual(free.limit_of(F.BUSINESS_WORKSPACES), 1)
         self.assertTrue(free.can(F.BUDGET_MONTH_OVERRIDE))
-        self.assertFalse(free.can(F.CASHBOOK_REPORT_EXPORT))
+        self.assertFalse(free.can(F.REPORTS_EXCEL))
 
         grant_plan(self.alice, 'plus')
         plus = resolve(self.alice)
         self.assertTrue(plus.value(F.PERSONAL_ACCOUNTS).unlimited)
         self.assertEqual(plus.limit_of(F.BUSINESS_WORKSPACES), 2)
-        self.assertTrue(plus.can(F.CASHBOOK_REPORT_EXPORT))
+        self.assertTrue(plus.can(F.REPORTS_EXCEL))
 
     def test_an_override_only_counts_inside_its_window(self):
         override = set_limit(self.alice, F.PERSONAL_ACCOUNTS, 10)

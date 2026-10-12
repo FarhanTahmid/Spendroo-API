@@ -34,7 +34,7 @@ Three rules hold everything together:
 from billing import gates
 from billing.catalog.keys import F
 
-gates.require(workspace, F.CASHBOOK_REPORT_EXPORT)        # a flag
+gates.require(workspace, F.REPORTS_EXCEL)                 # a flag
 gates.check_limit(workspace, F.BUSINESS_CASHBOOKS)        # room for one more
 with gates.consume(user, F.AI_CREDITS, 3, key=request_id):  # a quota; given back if the block raises
     ...

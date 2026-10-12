@@ -2,14 +2,11 @@ from rest_framework import viewsets,status
 from rest_framework.decorators import action
 from rest_framework.response import Response
 
-from django.http import HttpResponse
 from django.shortcuts import get_object_or_404
 from django.db.models import Sum, Count, Q
 
 from datetime import datetime
 
-from billing import gates
-from billing.catalog.keys import F
 from workspaces.tenancy import TenantScopedMixin
 
 from ..models import CashBook
@@ -19,7 +16,7 @@ from ..utility_funcs.reporting_utils import *
 class CashBookStatsViewSet(TenantScopedMixin, viewsets.ViewSet):
     """
     ViewSet for cashbook statistics and analytics.
-    Provides summary, analytics, and report generation endpoints.
+    Provides summary and analytics endpoints. Files to download are in reports/.
     """
     permission_classes = [CashBookAccessPermission]
     
@@ -132,121 +129,6 @@ class CashBookStatsViewSet(TenantScopedMixin, viewsets.ViewSet):
             'period': period,
             **analytics_data
         })
-    
-    @action(detail=False, methods=['get'], url_path='report/pdf')
-    def pdf_report(self, request, cashbook_pk=None):
-        """
-        Generate and download PDF report for cashbook entries.
-        
-        Query params:
-        - period: 'daily', 'weekly', 'monthly', 'custom'
-        - start_date: For custom period (YYYY-MM-DD)
-        - end_date: For custom period (YYYY-MM-DD)
-        """
-        cashbook = self.get_cashbook(cashbook_pk)
-        if not cashbook:
-            return Response(
-                {'error': 'You do not have permission to view this cashbook'},
-                status=status.HTTP_403_FORBIDDEN
-            )
-        gates.require(cashbook.workspace, F.CASHBOOK_REPORT_EXPORT)
-
-        # Get period parameters
-        period = request.query_params.get('period', 'monthly')
-        start_date_str = request.query_params.get('start_date')
-        end_date_str = request.query_params.get('end_date')
-
-        # Parse dates
-        try:
-            if period == 'custom':
-                if not start_date_str or not end_date_str:
-                    return Response(
-                        {'error': 'start_date and end_date required for custom period'},
-                        status=status.HTTP_400_BAD_REQUEST
-                    )
-                start_date = datetime.strptime(start_date_str, '%Y-%m-%d').date()
-                end_date = datetime.strptime(end_date_str, '%Y-%m-%d').date()
-            else:
-                start_date, end_date = get_date_range(period)
-        except ValueError as e:
-            return Response(
-                {'error': f'Invalid parameters: {str(e)}'},
-                status=status.HTTP_400_BAD_REQUEST
-            )
-
-        # Get entries for the period
-        entries = cashbook.entry_set.filter(
-            entry_date__range=[start_date, end_date]
-        ).select_related('category', 'payment_method', 'created_by').order_by('entry_date')
-
-        # Generate PDF
-        pdf_buffer = generate_pdf_report(cashbook, entries, start_date, end_date)
-        
-        # Create response
-        response = HttpResponse(pdf_buffer.getvalue(), content_type='application/pdf')
-        filename = f"{cashbook.book_name.replace(' ', '_')}_Report_{start_date}_{end_date}.pdf"
-        response['Content-Disposition'] = f'attachment; filename="{filename}"'
-        
-        return response
-    
-    @action(detail=False, methods=['get'], url_path='report/excel')
-    def excel_report(self, request, cashbook_pk=None):
-        """
-        Generate and download Excel report for cashbook entries.
-        
-        Query params:
-        - period: 'daily', 'weekly', 'monthly', 'custom'
-        - start_date: For custom period (YYYY-MM-DD)
-        - end_date: For custom period (YYYY-MM-DD)
-        """
-        cashbook = self.get_cashbook(cashbook_pk)
-        if not cashbook:
-            return Response(
-                {'error': 'You do not have permission to view this cashbook'},
-                status=status.HTTP_403_FORBIDDEN
-            )
-        gates.require(cashbook.workspace, F.CASHBOOK_REPORT_EXPORT)
-
-        # Get period parameters
-        period = request.query_params.get('period', 'monthly')
-        start_date_str = request.query_params.get('start_date')
-        end_date_str = request.query_params.get('end_date')
-
-        # Parse dates
-        try:
-            if period == 'custom':
-                if not start_date_str or not end_date_str:
-                    return Response(
-                        {'error': 'start_date and end_date required for custom period'},
-                        status=status.HTTP_400_BAD_REQUEST
-                    )
-                start_date = datetime.strptime(start_date_str, '%Y-%m-%d').date()
-                end_date = datetime.strptime(end_date_str, '%Y-%m-%d').date()
-            else:
-                start_date, end_date = get_date_range(period)
-        except ValueError as e:
-            return Response(
-                {'error': f'Invalid parameters: {str(e)}'},
-                status=status.HTTP_400_BAD_REQUEST
-            )
-
-        # Get entries for the period
-        entries = cashbook.entry_set.filter(
-            entry_date__range=[start_date, end_date]
-        ).select_related('category', 'payment_method', 'created_by').order_by('entry_date')
-
-        # Generate Excel
-        excel_buffer = generate_excel_report(cashbook, entries, start_date, end_date)
-        
-        # Create response
-        response = HttpResponse(
-            excel_buffer.getvalue(), 
-            content_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
-        )
-        filename = f"{cashbook.book_name.replace(' ', '_')}_Report_{start_date}_{end_date}.xlsx"
-        response['Content-Disposition'] = f'attachment; filename="{filename}"'
-        
-        return response
     
     @action(detail=False, methods=['get'], url_path='category-breakdown')
     def category_breakdown(self, request, cashbook_pk=None):

@@ -128,7 +128,7 @@ class CashBookAPITests(CashBookTestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.data['category']['id'], category_id)
 
-    def test_stats_and_reports(self):
+    def test_stats(self):
         book = self.create_book(self.alice_client)
         category = book.entrycategory_set.get(category_name='Food')
         self.add_entry(self.alice_client, book, entry_type='cash_out', amount_minor=2500, category=str(category.id))
@@ -144,10 +144,6 @@ class CashBookAPITests(CashBookTestCase):
         analytics = self.alice_client.get(f'{stats}analytics/').data
         self.assertEqual(analytics['summary']['total_cash_out_minor'], 2500)
         self.assertEqual(analytics['category_spending']['values'], [2500])
-
-        dates = '?period=custom&start_date=2026-10-01&end_date=2026-10-31'
-        self.assertEqual(self.alice_client.get(f'{stats}report/pdf/{dates}').status_code, 200)
-        self.assertEqual(self.alice_client.get(f'{stats}report/excel/{dates}').status_code, 200)
 
 
 class CrossTenantTests(CashBookTestCase):
@@ -187,8 +183,7 @@ class CrossTenantTests(CashBookTestCase):
 
     def test_foreign_categories_methods_and_stats_are_unreachable(self):
         for path in ('categories/', 'payment-methods/', 'stats/summary/', 'stats/analytics/',
-                     'stats/category-breakdown/', 'stats/payment-method-breakdown/',
-                     'stats/report/pdf/', 'stats/report/excel/'):
+                     'stats/category-breakdown/', 'stats/payment-method-breakdown/'):
             self.assertDenied(self.bob_client.get(f'{self.url}{path}'))
         self.assertDenied(self.bob_client.post(f'{self.url}categories/', {'category_name': 'X'}))
         self.assertDenied(self.bob_client.delete(f'{self.url}categories/{self.category.id}/'))

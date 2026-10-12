@@ -1,7 +1,7 @@
 """
 The questions features ask before doing something a plan may not include.
 
-    gates.require(workspace, F.CASHBOOK_REPORT_EXPORT)        a flag
+    gates.require(workspace, F.REPORTS_EXCEL)                 a flag
     gates.check_limit(workspace, F.BUSINESS_CASHBOOKS)        room for one more
     with gates.consume(user, F.AI_CREDITS, 3, key=...): ...   a quota, given back if the block fails
     gates.assert_row_writable(workspace, F.PERSONAL_ACCOUNTS, account_id)

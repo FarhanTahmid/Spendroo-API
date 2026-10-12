@@ -1,0 +1,64 @@
+<!DOCTYPE html>
+<html lang="{{ report.language }}">
+<head>
+<meta charset="utf-8">
+<title>{{ report.title }}: {{ report.subject }}</title>
+<style>
+{% include "reports/report.css" %}
+</style>
+</head>
+<body>
+<img class="watermark" src="{{ assets }}/spendroo-logo-horizontal-800w.png" alt="">
+
+<header class="band">
+  <img class="logo" src="{{ assets }}/spendroo-logo-horizontal-reverse-800w.png" alt="Spendroo">
+  <div class="name">
+    <div class="title">{{ report.title }}</div>
+    <div class="subject">{{ report.subject }}</div>
+  </div>
+</header>
+<p class="covers">{{ report.covers }}</p>
+
+<table class="meta">
+  <tr>
+    <td><span>{{ t.head_period }}</span>{{ period }}</td>
+    <td><span>{{ t.head_prepared_for }}</span>{{ report.prepared_for }}</td>
+    <td><span>{{ t.head_generated }}</span>{{ generated }}</td>
+    <td><span>{{ t.head_reference }}</span>{{ report.reference }}</td>
+  </tr>
+</table>
+
+{% if filters %}
+<section class="filtered">
+  <h3>{{ t.filter_title }}</h3>
+  <p>{{ t.filter_about }}</p>
+  {% for filter in filters %}<div><span>{{ filter.label }}</span>{{ filter.chosen }}</div>{% endfor %}
+</section>
+{% endif %}
+
+<h2>{{ t.section_glance }}</h2>
+{% for group in glance %}
+  {% if group.currency %}<div class="currency">{{ group.currency }}</div>{% endif %}
+  <table class="tiles">
+    <tr>
+      {% for tile in group.tiles %}
+        <td class="tile {{ tile.kind }}"><span>{{ tile.label }}</span><b>{{ tile.value }}</b></td>
+      {% endfor %}
+    </tr>
+  </table>
+{% endfor %}
+
+<section class="how">
+  <h3>{{ t.section_how }}</h3>
+  <ul>
+    {% for note in report.notes %}<li>{{ note }}</li>{% endfor %}
+  </ul>
+</section>
+
+{% if breakdowns %}<h2>{{ t.section_breakdown }}</h2>{% endif %}
+{% for table in breakdowns %}{% include "reports/table.html" %}{% endfor %}
+
+{% if details %}<h2 class="details">{{ t.section_details }}</h2>{% endif %}
+{% for table in details %}{% include "reports/table.html" %}{% endfor %}
+</body>
+</html>
