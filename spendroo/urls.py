@@ -26,6 +26,7 @@ api_v1_patterns = [
     path('',include('identity.urls')),
     path('workspaces/',include('workspaces.urls')),
     path('',include('cashbook.urls')),
+    path('ledger/',include('ledger_personal.urls')),
     path('sync/',include('sync.urls')),
     path('billing/',include('billing.api.urls')),
     path('schema/', SpectacularAPIView.as_view(), name='schema'),

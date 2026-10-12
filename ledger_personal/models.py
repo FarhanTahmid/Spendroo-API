@@ -96,7 +96,10 @@ class Transaction(WorkspaceOwnedModel):
     class Meta:
         ordering = ['-occurred_on', '-created_at']
         indexes = [
-            models.Index(fields=['workspace', 'account', 'occurred_on']),
+            # An account read newest first, a page at a time: the whole sort order
+            models.Index(
+                fields=['workspace', 'account', 'occurred_on', 'created_at', 'id'], name='ledger_transaction_feed',
+            ),
             models.Index(fields=['workspace', 'category', 'occurred_on']),
         ]
         constraints = [

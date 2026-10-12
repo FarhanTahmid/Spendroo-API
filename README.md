@@ -44,6 +44,8 @@ Tests: `python manage.py test`.
   a Google-verified email that already has an account signs into that account and links Google to it.
 - `/api/v1/sync/pull/?workspace=<id>&since=<seq>` changes since a cursor, per table, tombstones included.
 - `/api/v1/sync/push/` a batch of client mutations (`upsert`/`delete`), each with a client UUID so retries apply once.
+- `GET /api/v1/ledger/accounts/<id>/transactions/?from&to&kind&category&q&cursor&limit` one personal account's transactions, newest first, a page at a time (`next_cursor`). Read-only; the app itself reads its synced copy.
+- `GET /api/v1/ledger/accounts/<id>/summary/?from&to&kind&category&q&include=categories,series` what the same filter adds up to: cash in and out, the balance before and after the period, and optionally totals per category and the chart series.
   Upserts carry only the changed columns, so concurrent edits to different fields both survive.
   Sync has its own rate limit (`sync` scope), separate from the rest of the API.
 - `/api/v1/me/` profile, plus `onboarded_at` and `primary_mode` so onboarding is asked once per account.
