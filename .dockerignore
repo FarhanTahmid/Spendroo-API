@@ -9,4 +9,6 @@
 logs
 Media_Files
 staticfiles
+# Keys are mounted at run time (docker-compose.yml), never built into the image
+secrets
 docker-compose.yml

@@ -37,6 +37,8 @@ services:
       - "8000:8000"
     volumes:
       - media:/app/Media_Files
+      # The Firebase key (FCM_CREDENTIALS_FILE) and any other keys, read-only and never in the image
+      - ./secrets:/app/secrets:ro
 
   worker:
     <<: *app
