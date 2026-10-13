@@ -25,6 +25,12 @@ TEXT = {
         'budget_80': '{title}: {percent}% of the budget is spent',
         'budget_over': '{title} is over its budget',
         'budget.detail': '{spent} of {limit}',
+        'goal_milestone': '{percent}% of the way to {title}',
+        'goal_reached': 'You reached {title}!',
+        'goal_behind': '{title} is falling behind',
+        'goal_idle': 'Nothing put into {title} for {days} days',
+        'goal.detail': '{saved} of {target} saved',
+        'goal.behind': '{needed} a month gets it back on track',
         'confirm': 'Tap to confirm or skip.',
         'test.title': 'Notifications are working',
         'test.body': 'This is how Spendroo will remind you.',
@@ -43,6 +49,12 @@ TEXT = {
         'budget_80': '{title}: বাজেটের {percent}% খরচ হয়েছে',
         'budget_over': '{title}: বাজেট পেরিয়ে গেছে',
         'budget.detail': '{limit}-এর মধ্যে {spent}',
+        'goal_milestone': '{title}: লক্ষ্যের {percent}% পূরণ হয়েছে',
+        'goal_reached': '{title}: লক্ষ্য পূরণ হয়েছে!',
+        'goal_behind': '{title} সময়ের চেয়ে পিছিয়ে আছে',
+        'goal_idle': '{days} দিন ধরে {title}-এ কিছু জমানো হয়নি',
+        'goal.detail': '{target}-এর মধ্যে {saved} জমেছে',
+        'goal.behind': 'মাসে {needed} জমালে আবার সময়মতো হবে',
         'confirm': 'নিশ্চিত করতে বা বাদ দিতে চাপুন।',
         'test.title': 'নোটিফিকেশন কাজ করছে',
         'test.body': 'Spendroo এভাবেই আপনাকে মনে করিয়ে দেবে।',
@@ -80,6 +92,11 @@ def _title(kind, params, language):
         key = 'blocked'
     elif kind in ('budget_80', 'budget_over'):
         return say(kind, language, title=params.get('category') or '', percent=number(params.get('percent', 80), language))
+    elif kind.startswith('goal_'):
+        return say(
+            kind, language, title=title, percent=number(params.get('mark') or params.get('percent') or 0, language),
+            days=number(days, language),
+        )
     elif kind in ('due', 'overdue', 'posted'):
         key = kind
     else:
@@ -92,6 +109,13 @@ def _body(kind, params, language):
     amount, currency = params.get('amount_minor'), params.get('currency') or ''
     if amount is None or not currency:
         return ''
+    if kind == 'goal_behind' and params.get('needed_minor'):
+        return say('goal.behind', language, needed=_money(params['needed_minor'], currency, language))
+    if kind.startswith('goal_'):
+        return say(
+            'goal.detail', language,
+            saved=_money(params.get('saved_minor') or 0, currency, language), target=_money(amount, currency, language),
+        )
     if kind.startswith('budget_'):
         return say(
             'budget.detail', language,

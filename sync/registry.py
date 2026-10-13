@@ -6,12 +6,15 @@ Rows travel as flat dicts keyed by database column name (`cashbook_id`, not
 """
 from django.core.exceptions import ValidationError
 from django.db import transaction
+from django.utils import timezone
 
 from billing.catalog.keys import F
 from billing.sync_gates import NO_GATES, Flag, Limit, Lock
 from cashbook.models import CashBook, CashBookAdditionalMember, Entry, EntryCategory, PaymentMethod
 from ledger_personal import allocations
-from ledger_personal.models import Account, Budget, Category, Transaction
+from ledger_personal import goals as goal_math
+from ledger_personal.models import Account, Budget, Category, SavingsGoal, Transaction
+from ledger_personal.queries import balance_of
 from reminders import engine
 from reminders.models import InboxItem, Occurrence, Rule
 from workspaces.models import Membership
@@ -157,11 +160,19 @@ class AccountTable(WorkspaceLevelTable):
     writable = ['name', 'kind', 'currency', 'opening_balance_minor', 'is_archived']
     immutable = ['currency']
     plan_gates = [
-        # Archived accounts do not count, so bringing one back needs room like a new one
-        Limit(F.PERSONAL_ACCOUNTS, counts=lambda account: not account.is_archived),
+        # Archived accounts do not count, so bringing one back needs room like a new one.
+        # A goal's account is counted as the goal (SavingsGoalTable).
+        Limit(F.PERSONAL_ACCOUNTS, counts=lambda account: not account.is_archived and not account.is_goal),
         # A locked account can still be archived
-        Lock(F.PERSONAL_ACCOUNTS, unless=lambda account: account.is_archived),
+        Lock(F.PERSONAL_ACCOUNTS, unless=lambda account: account.is_archived or account.is_goal),
     ]
+
+    def on_write(self, workspace, user, obj, creating, before):
+        # Money set aside stays set aside: a goal's account never becomes one to spend from, nor the other way
+        if not creating and 'kind' in before and (before['kind'] == Account.KIND_GOAL) != obj.is_goal:
+            raise ValidationError('An account cannot become a goal, or stop being one.')
+        if obj.is_goal and obj.opening_balance_minor:
+            raise ValidationError('Money reaches a goal by a transfer, not as an opening balance.')
 
 
 class CategoryTable(WorkspaceLevelTable):
@@ -185,13 +196,20 @@ class TransactionTable(WorkspaceLevelTable):
     references = {
         'account_id': (Account, None), 'category_id': (Category, None), 'occurrence_id': (Occurrence, None),
     }
-    # Read-only together with the account they are on
-    plan_gates = [Lock(F.PERSONAL_ACCOUNTS, target=lambda transaction: transaction.account_id)]
+    plan_gates = [
+        # Read-only together with the account they are on
+        Lock(F.PERSONAL_ACCOUNTS, target=lambda transaction: transaction.account_id),
+        # Nothing more goes into a goal a downgrade locked; taking money out always works
+        Lock(F.SAVINGS_GOALS, target=lambda transaction: _goal_paid_into(transaction)),
+    ]
 
     def on_write(self, workspace, user, obj, creating, before):
         # Only when the split itself is sent: a category deleted since must not block other edits
         if obj.splits and (creating or 'splits' in before):
             allocations.check_categories(workspace, obj.splits)
+        # Money is never spent straight from a goal: it goes back to an account first
+        if obj.account.is_goal and obj.kind != 'transfer':
+            raise ValidationError('Money goes into or out of a goal by a transfer only.')
 
 
 class BudgetTable(WorkspaceLevelTable):
@@ -223,11 +241,58 @@ class RuleTable(WorkspaceLevelTable):
     def on_write(self, workspace, user, obj, creating, before):
         if obj.splits and (creating or 'splits' in before):
             allocations.check_categories(workspace, obj.splits)
+        # A schedule may put money into a goal, never take it out
+        if obj.account_id is not None and obj.account.is_goal:
+            raise ValidationError('A recurring transaction cannot take money out of a goal.')
         if creating or any(column.removesuffix('_id') in Rule.TIMING_FIELDS for column in before):
             # The dates to come are worked out again, as soon as this is saved
             obj.needs_refresh = True
             obj.ended = False
             transaction.on_commit(lambda: engine.refresh(obj.pk), robust=True)
+
+
+def _goal_paid_into(row):
+    """The goal a transaction puts money into, or None: taking money out is never locked."""
+    if row.amount_minor is None or row.amount_minor <= 0:
+        return None
+    return SavingsGoal.all_objects.filter(account_id=row.account_id).values_list('id', flat=True).first()
+
+
+class SavingsGoalTable(WorkspaceLevelTable):
+    """
+    The app makes the goal's account and the goal in one push, account first.
+    Reaching the target is the server's to say (reminders/goals.py).
+    """
+    writable = ['account_id', 'name', 'target_minor', 'target_on', 'icon', 'color', 'status']
+    immutable = ['account_id']
+    read_only = ['currency', 'reached_at', 'milestones_hit']
+    references = {'account_id': (Account, None)}
+    plan_gates = [
+        # Archived goals do not count, so bringing one back needs room like a new one
+        Limit(F.SAVINGS_GOALS, counts=lambda goal: goal.status != SavingsGoal.ARCHIVED),
+        # A locked goal can still be archived, which is one way back under the limit
+        Lock(F.SAVINGS_GOALS, unless=lambda goal: goal.status == SavingsGoal.ARCHIVED),
+    ]
+
+    def can_write(self, user, role, obj, op):
+        if not super().can_write(user, role, obj, op):
+            return False
+        # Money left in a goal would be lost from sight: it is taken out first
+        return op != 'delete' or balance_of(obj.account) == 0
+
+    def on_write(self, workspace, user, obj, creating, before):
+        if not obj.account.is_goal:
+            raise ValidationError('A goal keeps its money in an account of kind goal.')
+        was = None if creating else before.get('status', obj.status)
+        if obj.status == SavingsGoal.REACHED and was != SavingsGoal.REACHED:
+            raise ValidationError('A goal is marked reached by the server, when the money is there.')
+        if creating or 'target_minor' in before or was == SavingsGoal.ARCHIVED:
+            # A new target, or a goal brought back: what counts as reached is worked out again
+            today = timezone.now().date()
+            progress = goal_math.progress(obj, today)
+            obj.milestones_hit &= goal_math.milestones_passed(progress.percent)
+            if obj.status == SavingsGoal.REACHED and progress.percent < 100:
+                obj.status = SavingsGoal.ACTIVE
 
 
 class OccurrenceTable(WorkspaceLevelTable):
@@ -270,6 +335,7 @@ TABLES = {
         EntryTable('entries', Entry),
         CashBookMemberTable('cashbook_members', CashBookAdditionalMember),
         AccountTable('accounts', Account),
+        SavingsGoalTable('savings_goals', SavingsGoal),
         CategoryTable('categories', Category),
         RuleTable('recurring_rules', Rule),
         OccurrenceTable('recurring_occurrences', Occurrence),

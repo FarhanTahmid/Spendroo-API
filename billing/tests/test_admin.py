@@ -179,12 +179,12 @@ class MatrixTests(AdminTestCase):
         data = self.matrix_data(**{
             self.cell('free', F.PERSONAL_ACCOUNTS): '∞',
             self.cell('free', F.REPORTS_EXCEL): 'on',
-            self.cell('plus', F.SAVINGS_GOALS): None,
+            self.cell('plus', F.HOME_WIDGET): None,
         })
         self.admin.post(self.url, data)
         self.assertTrue(self.value('free', F.PERSONAL_ACCOUNTS).unlimited)
         self.assertTrue(self.value('free', F.REPORTS_EXCEL).enabled)
-        self.assertFalse(self.value('plus', F.SAVINGS_GOALS).enabled)
+        self.assertFalse(self.value('plus', F.HOME_WIDGET).enabled)
 
     def test_one_bad_cell_saves_nothing(self):
         data = self.matrix_data(**{

@@ -1,6 +1,6 @@
 from django.contrib import admin
 from unfold.admin import ModelAdmin
-from .models import Account, Budget, Category, Transaction
+from .models import Account, Budget, Category, SavingsGoal, Transaction
 
 SYNC_READONLY = ['id', 'workspace', 'version', 'server_seq', 'created_at', 'updated_at', 'deleted_at']
 
@@ -34,3 +34,11 @@ class TransactionAdmin(ModelAdmin):
 class BudgetAdmin(ModelAdmin):
     list_display = ['category', 'amount_minor', 'currency', 'workspace']
     readonly_fields = SYNC_READONLY
+
+
+@admin.register(SavingsGoal)
+class SavingsGoalAdmin(ModelAdmin):
+    list_display = ['name', 'target_minor', 'currency', 'target_on', 'status', 'workspace']
+    list_filter = ['status', 'currency']
+    search_fields = ['name', 'workspace__owner__email']
+    readonly_fields = SYNC_READONLY + ['account', 'currency', 'reached_at', 'milestones_hit']

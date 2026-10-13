@@ -15,7 +15,7 @@ from billing import gates
 from billing.entitlements import forget_counts
 from billing.models import Stamp
 from workspaces.models import Workspace
-from reminders.tasks import budgets_changed
+from reminders.tasks import budgets_changed, goals_changed
 from workspaces.tenancy import TenantScopedMixin
 from .models import SyncMutation
 from .registry import TABLES, accessible_cashbook_ids
@@ -24,6 +24,7 @@ DEFAULT_PULL_LIMIT = 500
 MAX_PULL_LIMIT = 1000
 MAX_PUSH_MUTATIONS = 200
 BUDGET_TABLES = ('transactions', 'budgets')
+GOAL_TABLES = ('transactions', 'savings_goals')
 
 
 # Shapes for the API schema only; the views validate by hand so that one bad
@@ -186,6 +187,9 @@ class PushView(TenantScopedMixin, APIView):
         # What was spent or what may be spent changed: the budget alerts are looked at shortly
         if any(isinstance(m, dict) and m.get('table') in BUDGET_TABLES for m in mutations):
             budgets_changed(workspace.id)
+        # Money moved into or out of a goal, or a target changed: milestones are looked at shortly
+        if any(isinstance(m, dict) and m.get('table') in GOAL_TABLES for m in mutations):
+            goals_changed(workspace.id)
         return Response({'results': results})
 
     def process(self, user, workspace, role, mutation):

@@ -23,8 +23,8 @@ class NotificationPreferenceSerializer(serializers.ModelSerializer):
     class Meta:
         model = NotificationPreference
         fields = (
-            'push_enabled', 'bills', 'income', 'recorded', 'budgets', 'daily_nudge', 'nudge_time', 'reminder_time',
-            'quiet_from', 'quiet_to',
+            'push_enabled', 'bills', 'income', 'recorded', 'budgets', 'goals', 'daily_nudge', 'nudge_time',
+            'reminder_time', 'quiet_from', 'quiet_to',
         )
 
     def validate(self, attrs):

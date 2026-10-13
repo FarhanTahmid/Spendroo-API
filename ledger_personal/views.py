@@ -9,9 +9,12 @@ from billing import gates
 from billing.catalog.keys import F
 from workspaces.models import Membership
 from workspaces.tenancy import TenantScopedMixin
-from . import pagination, queries
-from .models import Account
-from .serializers import AccountSummarySerializer, AccountTransactionPageSerializer, AccountTransactionSerializer
+from reminders.inbox import today_in
+from . import goals, pagination, queries
+from .models import Account, SavingsGoal
+from .serializers import (
+    AccountSummarySerializer, AccountTransactionPageSerializer, AccountTransactionSerializer, GoalSummarySerializer,
+)
 
 INCLUDES = ('categories', 'series')
 
@@ -120,3 +123,26 @@ class AccountSummaryView(AccountView):
         if 'series' in include:
             data['series'] = queries.series(account, filters)
         return Response(AccountSummarySerializer(data).data)
+
+
+class GoalSummaryView(TenantScopedMixin, APIView):
+    """
+    GET: how far a savings goal has come and whether it keeps pace with its
+    date. Its transactions are those of its account (accounts/<id>/transactions/).
+    """
+    permission_classes = [IsAuthenticated]
+
+    @extend_schema(responses=GoalSummarySerializer)
+    def get(self, request, goal_id):
+        goal = SavingsGoal.objects.select_related('account', 'workspace').filter(id=goal_id).first()
+        if goal is None or goal.workspace.role_of(request.user) not in Membership.MANAGER_ROLES:
+            raise NotFound('Goal not found.')
+        progress = goals.progress(goal, today_in(goal.workspace))
+        return Response(GoalSummarySerializer({
+            'id': goal.id, 'name': goal.name, 'currency': goal.currency, 'status': goal.status,
+            'target_on': goal.target_on, **progress.as_dict(),
+            'is_locked': (
+                goal.status != SavingsGoal.ARCHIVED
+                and goal.id in gates.keep_state(goal.workspace, F.SAVINGS_GOALS).locked
+            ),
+        }).data)

@@ -128,6 +128,8 @@ class NotificationPreference(models.Model):
     # What was recorded by itself, or could not be
     recorded = models.BooleanField(default=True)
     budgets = models.BooleanField(default=True)
+    # Savings goals: milestones, falling behind, a long spell with nothing put in
+    goals = models.BooleanField(default=True)
     # "Did you spend anything today?" The phone schedules this one itself
     daily_nudge = models.BooleanField(default=True)
     nudge_time = models.TimeField(default=time(21, 0))
@@ -143,6 +145,7 @@ class NotificationPreference(models.Model):
         'income_expected': 'income',
         'posted': 'recorded', 'rule_blocked': 'recorded',
         'budget_80': 'budgets', 'budget_over': 'budgets',
+        'goal_milestone': 'goals', 'goal_reached': 'goals', 'goal_behind': 'goals', 'goal_idle': 'goals',
     }
 
     def __str__(self):

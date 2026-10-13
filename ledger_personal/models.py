@@ -14,7 +14,10 @@ class Account(WorkspaceOwnedModel):
         ('savings', 'Savings'),
         ('mobile_money', 'Mobile money'),
         ('card', 'Card'),
+        # Holds the money of one savings goal; never offered as a place to spend from
+        ('goal', 'Goal'),
     ]
+    KIND_GOAL = 'goal'
 
     name = models.CharField(max_length=100)
     kind = models.CharField(max_length=20, choices=KIND_CHOICES, default='cash')
@@ -28,6 +31,10 @@ class Account(WorkspaceOwnedModel):
 
     def __str__(self):
         return f"{self.name} ({self.currency})"
+
+    @property
+    def is_goal(self):
+        return self.kind == self.KIND_GOAL
 
 
 class Category(WorkspaceOwnedModel):
@@ -203,3 +210,57 @@ class Budget(WorkspaceOwnedModel):
             raise ValidationError({'month': 'Use the first day of the month.'})
         if self.category_id is not None and self.category.kind != 'expense':
             raise ValidationError({'category': 'Budgets apply to expense categories only.'})
+
+
+@pghistory.track()
+class SavingsGoal(WorkspaceOwnedModel):
+    """
+    Money put aside for something. The money sits in an account of its own
+    (kind 'goal'): putting money in or taking it out is a transfer, so the
+    account it came from shows less to spend and nothing is counted twice.
+    """
+    ACTIVE = 'active'
+    REACHED = 'reached'
+    ARCHIVED = 'archived'
+    STATUS_CHOICES = [
+        (ACTIVE, 'Active'),
+        (REACHED, 'Reached'),
+        (ARCHIVED, 'Archived'),
+    ]
+    #: Percentages of the target that are celebrated, in the order of their bits in milestones_hit
+    MILESTONES = (25, 50, 75, 100)
+
+    account = models.OneToOneField(Account, on_delete=models.PROTECT, related_name='goal')
+    name = models.CharField(max_length=100)
+    target_minor = models.BigIntegerField()
+    # The account's, copied on save
+    currency = models.CharField(max_length=3, editable=False)
+    target_on = models.DateField(null=True, blank=True)
+    # A name from the app's goal icon set
+    icon = models.CharField(max_length=40, blank=True, default='')
+    color = models.CharField(max_length=7, null=True, blank=True, validators=[hex_color])
+    status = models.CharField(max_length=10, choices=STATUS_CHOICES, default=ACTIVE)
+    # Set by the server the first time the saved amount reaches the target
+    reached_at = models.DateTimeField(null=True, blank=True, editable=False)
+    # One bit per MILESTONES entry already told to the user, so each is celebrated once
+    milestones_hit = models.PositiveSmallIntegerField(default=0, editable=False)
+
+    class Meta:
+        ordering = ['created_at']
+        constraints = [
+            models.CheckConstraint(condition=Q(target_minor__gt=0), name='goal_target_positive'),
+        ]
+
+    def __str__(self):
+        return f"{self.name} ({self.target_minor} {self.currency})"
+
+    def get_parent_workspace_id(self):
+        return self.account.workspace_id
+
+    def clean(self):
+        if self.account_id is not None and not self.account.is_goal:
+            raise ValidationError({'account': 'A goal keeps its money in an account of kind goal.'})
+
+    def save(self, *args, **kwargs):
+        self.currency = self.account.currency
+        super().save(*args, **kwargs)

@@ -58,6 +58,6 @@ class DeviceAdmin(ModelAdmin):
 
 @admin.register(NotificationPreference)
 class NotificationPreferenceAdmin(ModelAdmin):
-    list_display = ('user', 'push_enabled', 'bills', 'income', 'recorded', 'budgets', 'daily_nudge', 'reminder_time')
+    list_display = ('user', 'push_enabled', 'bills', 'income', 'recorded', 'budgets', 'goals', 'daily_nudge', 'reminder_time')
     list_filter = ('push_enabled', 'daily_nudge')
     search_fields = ('user__email', 'user__username')

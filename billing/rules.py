@@ -6,7 +6,7 @@ downgrade, and the meters in the admin all read these rules, so they cannot
 disagree about what "4 accounts" means.
 """
 from cashbook.models import CashBook
-from ledger_personal.models import Account, Category
+from ledger_personal.models import Account, Category, SavingsGoal
 from reminders.models import Rule
 from workspaces.models import Membership, Workspace
 
@@ -36,7 +36,8 @@ class PersonalAccounts(LimitRule):
     noun = 'account'
 
     def queryset(self, owner, workspace):
-        return Account.objects.filter(workspace=workspace, is_archived=False)
+        # A goal's money has an account of its own; goals are counted on their own
+        return Account.objects.filter(workspace=workspace, is_archived=False).exclude(kind=Account.KIND_GOAL)
 
     def label(self, obj):
         return obj.name
@@ -62,6 +63,17 @@ class StandaloneReminders(LimitRule):
 
     def label(self, obj):
         return obj.title
+
+
+class SavingsGoals(LimitRule):
+    feature = F.SAVINGS_GOALS
+    noun = 'goal'
+
+    def queryset(self, owner, workspace):
+        return SavingsGoal.objects.filter(workspace=workspace).exclude(status=SavingsGoal.ARCHIVED)
+
+    def label(self, obj):
+        return obj.name
 
 
 class Cashbooks(LimitRule):
@@ -100,7 +112,7 @@ class TeamSeats(LimitRule):
 
 
 RULES = {rule.feature.key: rule for rule in (
-    PersonalAccounts(), CustomCategories(), StandaloneReminders(), Cashbooks(), BusinessWorkspaces(), TeamSeats(),
+    PersonalAccounts(), CustomCategories(), StandaloneReminders(), SavingsGoals(), Cashbooks(), BusinessWorkspaces(), TeamSeats(),
 )}
 
 

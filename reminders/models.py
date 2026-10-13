@@ -171,6 +171,7 @@ class InboxItem(WorkspaceOwnedModel):
     TYPES = (
         'upcoming', 'due', 'overdue', 'posted', 'income_expected', 'reminder', 'rule_blocked',
         'budget_80', 'budget_over',
+        'goal_milestone', 'goal_reached', 'goal_behind', 'goal_idle',
     )
 
     type = models.CharField(max_length=20, choices=[(kind, kind) for kind in TYPES])

@@ -20,7 +20,7 @@ logger = logging.getLogger(__name__)
 #: Older than this and never pushed (the worker was off, or quiet hours ran long): no longer news
 STALE_AFTER = timedelta(hours=36)
 #: Items made already settled that are still worth a push: they only inform
-INFORMS = ('posted', 'budget_80', 'budget_over')
+INFORMS = ('posted', 'budget_80', 'budget_over', 'goal_milestone', 'goal_reached', 'goal_behind', 'goal_idle')
 #: The screen a tap opens (a go_router path in the app)
 ROUTE = '/inbox'
 

@@ -4,7 +4,7 @@ from procrastinate.exceptions import AlreadyEnqueued
 
 from notifications import delivery
 
-from . import budgets, engine
+from . import budgets, engine, goals
 
 
 # The timestamp is not used: a late run does the same work as a timely one.
@@ -23,6 +23,20 @@ def evaluate_budgets(workspace_id):
     delivery.deliver()
 
 
+# 04:00 UTC is 10:00 in Dhaka: news about a goal comes in the morning
+@app.periodic(cron='0 4 * * *')
+@app.task(queue='reminders', queueing_lock='reminders.goals_daily')
+def run_goals_daily(timestamp):
+    goals.daily()
+    delivery.deliver()
+
+
+@app.task(queue='reminders')
+def evaluate_goals(workspace_id):
+    goals.evaluate(workspace_id)
+    delivery.deliver()
+
+
 def budgets_changed(workspace_id):
     """
     Look at the workspace's budgets shortly, once however many changes arrive
@@ -33,6 +47,17 @@ def budgets_changed(workspace_id):
         with transaction.atomic():
             evaluate_budgets.configure(
                 queueing_lock=f'budgets:{workspace_id}', schedule_in={'seconds': 30},
+            ).defer(workspace_id=str(workspace_id))
+    except AlreadyEnqueued:
+        pass  # already on its way
+
+
+def goals_changed(workspace_id):
+    """Look at the workspace's goals shortly, once however many changes arrive together."""
+    try:
+        with transaction.atomic():
+            evaluate_goals.configure(
+                queueing_lock=f'goals:{workspace_id}', schedule_in={'seconds': 30},
             ).defer(workspace_id=str(workspace_id))
     except AlreadyEnqueued:
         pass  # already on its way

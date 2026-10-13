@@ -74,3 +74,24 @@ class AccountSummarySerializer(serializers.Serializer):
     expense_categories = CategoryTotalSerializer(many=True, required=False)
     income_categories = CategoryTotalSerializer(many=True, required=False)
     series = SeriesSerializer(required=False)
+
+
+class GoalSummarySerializer(serializers.Serializer):
+    """Amounts in minor units of `currency`. Worked out as the app does (lib/features/goals/goal_math.dart)."""
+    id = serializers.UUIDField()
+    name = serializers.CharField()
+    currency = serializers.CharField()
+    status = serializers.CharField()
+    target_on = serializers.DateField(allow_null=True)
+    saved_minor = serializers.IntegerField()
+    target_minor = serializers.IntegerField()
+    percent = serializers.IntegerField(help_text='Whole percent saved, floored; may pass 100.')
+    remaining_minor = serializers.IntegerField()
+    expected_minor = serializers.IntegerField(
+        allow_null=True, help_text='Where a steady saver would be today. Empty without a date.',
+    )
+    needed_per_month_minor = serializers.IntegerField(
+        allow_null=True, help_text='Still to put in each month to make the date.',
+    )
+    pace = serializers.ChoiceField(choices=['on_track', 'ahead', 'behind', 'no_date', 'reached'])
+    is_locked = serializers.BooleanField(help_text='Nothing more goes in since a downgrade; taking money out works.')

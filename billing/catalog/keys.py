@@ -58,7 +58,10 @@ class F:
         'reminders.standalone', LIMIT, 'Reminders',
         'Reminders with nothing to record, in use at one time. Paused ones do not count.',
     )
-    SAVINGS_GOALS = FeatureKey('goals.savings', FLAG, 'Savings goals')
+    SAVINGS_GOALS = FeatureKey(
+        'goals.savings', LIMIT, 'Savings goals',
+        'Goals in use at one time. Archived goals do not count.',
+    )
     HOME_WIDGET = FeatureKey('widget.home', FLAG, 'Home-screen widget')
 
     # Business
