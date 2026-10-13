@@ -1,3 +1,7 @@
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+
+from django.core.exceptions import ValidationError
+from django.core.validators import MaxValueValidator
 from django.db import models
 from django.db.models.functions import Lower
 from django.contrib.auth.models import AbstractBaseUser, PermissionsMixin
@@ -80,6 +84,17 @@ class AppUser(AbstractBaseUser,PermissionsMixin):
         super().save(*args, **kwargs)
 
 
+DEFAULT_TIMEZONE = 'Asia/Dhaka'
+SATURDAY = 5
+
+
+def validate_timezone(name):
+    try:
+        ZoneInfo(name)
+    except (ZoneInfoNotFoundError, ValueError):
+        raise ValidationError('Not a time zone the server knows.')
+
+
 class UserSettings(models.Model):
     MODE_CHOICES = [
         ('personal', 'Personal'),
@@ -93,6 +108,11 @@ class UserSettings(models.Model):
     # reinstall or a second phone skips onboarding
     onboarded_at = models.DateTimeField(null=True, blank=True)
     primary_mode = models.CharField(max_length=10, choices=MODE_CHOICES, blank=True, default='')
+    # Where the user's day begins and ends: an IANA name the app reports from the
+    # phone. "Today" for what falls due, and the hour of a reminder, are read in it.
+    timezone = models.CharField(max_length=64, default=DEFAULT_TIMEZONE, validators=[validate_timezone])
+    # The day weeks start on, Monday as 0. New recurring rules copy it.
+    week_start = models.PositiveSmallIntegerField(default=SATURDAY, validators=[MaxValueValidator(6)])
 
     class Meta:
         verbose_name = 'User Setting'

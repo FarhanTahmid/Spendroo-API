@@ -1,7 +1,7 @@
 from datetime import date
 
 from cashbook.models import CashBook
-from ledger_personal.models import Account
+from ledger_personal.models import Account, Category
 from reports import periods
 from reports.builders import account, business, cashbook, personal
 from reports.document import Money, Totals
@@ -44,6 +44,24 @@ class AccountStatementTests(ReportTestCase):
             ['Uncategorised', 1, taka(30000), 0.4],
         ])
         self.assertEqual(spending.total, ['Total', 2, taka(75000), None])
+
+    def test_each_part_of_a_split_is_counted_under_its_own_category(self):
+        transport = Category.objects.get(workspace=self.personal, name='Transport')
+        self.split('expense', '2026-10-06', [(self.food, 20000), (transport, 10000), (None, 20000)], note='ATM cash')
+        report = account.build(self.cash, self.context())
+        spending = self.table(report, 'Spending by category')
+        self.assertEqual([row[:3] for row in spending.rows], [
+            ['Food', 2, taka(65000)], ['Uncategorised', 2, taka(50000)], ['Transport', 1, taka(10000)],
+        ])
+        # The parts add up to what was spent
+        self.assertEqual(spending.total[2], taka(125000))
+        self.assertEqual(report.totals, [Totals('BDT', 2980000, 500000, 125000, 3355000)])
+        line = self.table(report, 'Statement').rows[-1]
+        self.assertEqual(line[1:5], ['ATM cash', 'Split: Food, Transport, Uncategorised', None, taka(50000)])
+
+        whole = personal.build(self.personal, self.context())
+        self.assertEqual(self.table(whole, 'Spending by category').total[2], taka(125000))
+        self.assertEqual(self.table(whole, 'Income and spending').rows[-1][2], 'Split: Food, Transport, Uncategorised')
 
     def test_a_quiet_period_says_so(self):
         quiet = periods.Period(periods.CUSTOM, date(2020, 1, 1), date(2020, 1, 31))

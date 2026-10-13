@@ -1,4 +1,6 @@
 import uuid
+
+from django.core.exceptions import ValidationError
 from django.utils import timezone
 from rest_framework.test import APIClient
 
@@ -42,6 +44,16 @@ class AccountTestCase(BillingTestCase):
         group = uuid.uuid4()
         self.add('transfer', -amount, day, account=source, note=note, group=group)
         self.add('transfer', amount, day, account=target, note=note, group=group)
+
+    def split(self, kind, day, parts, note='', account=None):
+        """One transaction filed under several categories: `parts` is (category or None, amount)."""
+        amount = sum(part for _, part in parts)
+        return Transaction.objects.create(
+            account=account or self.cash, kind=kind, amount_minor=-amount if kind == 'expense' else amount,
+            occurred_on=day, note=note,
+            splits=[{'category_id': category and str(category.id), 'amount_minor': part, 'note': ''}
+                    for category, part in parts],
+        )
 
     def seed(self):
         self.add('income', 5000000, '2026-09-01', category=self.salary, note='September pay')
@@ -222,6 +234,74 @@ class SummaryTests(AccountTestCase):
         )
         self.assertEqual(self.summary(include='series', **{'from': '2026-10-01', 'to': '2026-10-31'})['series']['opening_minor'],
                          2981000)
+
+
+class SplitTests(AccountTestCase):
+    """Cash taken out and spent on several things: one transaction, each part under its own category."""
+
+    def setUp(self):
+        super().setUp()
+        self.seed()
+        self.transport = Category.objects.get(workspace=self.personal, name='Transport')
+        self.atm = self.split('expense', '2026-10-06', [(self.food, 20000), (self.transport, 10000), (None, 20000)],
+                              note='ATM cash')
+        self.october = {'from': '2026-10-01', 'to': '2026-10-31'}
+
+    def test_the_parts_must_add_up_and_a_transfer_cannot_be_split(self):
+        part = {'category_id': str(self.food.id), 'amount_minor': 100, 'note': ''}
+        cases = [
+            ('expense', -300, [part, part]),            # adds up to 200
+            ('expense', -100, [part]),                  # one part is just a category
+            ('expense', -200, [part, {**part, 'amount_minor': 0}, part]),
+            ('expense', -200, [part, {**part, 'category_id': 'food'}]),
+            ('transfer', -200, [part, part]),
+        ]
+        for kind, amount, splits in cases:
+            row = Transaction(
+                account=self.cash, workspace=self.personal, currency='BDT', kind=kind, amount_minor=amount,
+                occurred_on='2026-10-07', splits=splits, transfer_group_id=uuid.uuid4() if kind == 'transfer' else None,
+            )
+            with self.assertRaises(ValidationError, msg=(kind, amount, splits)):
+                row.full_clean()
+
+    def test_a_split_has_no_category_of_its_own(self):
+        self.atm.category = self.food
+        self.atm.save()
+        self.atm.refresh_from_db()
+        self.assertIsNone(self.atm.category_id)
+        row = next(row for row in self.rows()['results'] if row['note'] == 'ATM cash')
+        self.assertEqual([part['amount_minor'] for part in row['splits']], [20000, 10000, 20000])
+
+    def test_each_part_counts_under_its_own_category(self):
+        data = self.summary(include='categories', **self.october)
+        self.assertEqual(
+            [(row['name'], row['amount_minor'], row['count'], row['largest_minor']) for row in data['expense_categories']],
+            [('Food', 65000, 2, 45000), (None, 50000, 2, 30000), ('Transport', 10000, 1, 10000)],
+        )
+        # Whatever the split, the whole amount left the account
+        self.assertEqual((data['expense_minor'], data['count']), (125000, 4))
+        self.assertEqual(sum(row['amount_minor'] for row in data['expense_categories']), data['expense_minor'])
+
+    def test_a_choice_of_categories_counts_only_the_chosen_parts(self):
+        food = self.summary(category=str(self.food.id), include='categories,series', **self.october)
+        self.assertEqual((food['expense_minor'], food['count'], food['largest_expense_minor']), (65000, 2, 45000))
+        self.assertEqual([(row['name'], row['amount_minor']) for row in food['expense_categories']], [('Food', 65000)])
+        self.assertEqual([(p['date'], p['out_minor']) for p in food['series']['points']],
+                         [('2026-10-02', 45000), ('2026-10-05', 0), ('2026-10-06', 20000)])
+        # The balance still counts all of it
+        self.assertEqual(food['series']['points'][-1]['balance_minor'], 3355000)
+
+        none = self.summary(category='none', **self.october)
+        self.assertEqual((none['expense_minor'], none['count']), (50000, 2))
+        both = self.summary(category=f'{self.transport.id},none', **self.october)
+        self.assertEqual(both['expense_minor'], 60000)
+        self.assertEqual(self.notes(category=str(self.transport.id)), ['ATM cash'])
+
+    def test_a_part_under_a_deleted_category_reads_as_none(self):
+        self.transport.soft_delete()
+        data = self.summary(include='categories', **self.october)
+        self.assertEqual([(row['name'], row['amount_minor']) for row in data['expense_categories']],
+                         [('Food', 65000), (None, 60000)])
 
 
 class AccessTests(UnprivilegedRoleMixin, AccountTestCase):

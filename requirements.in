@@ -13,7 +13,12 @@ django-pgtrigger==4.17.0
 # Admin theme: dashboard, sidebar, actions (see UNFOLD in settings/base.py)
 django-unfold==0.108.0
 procrastinate==3.10.0
+# Checks reminders/schedule.py in its tests; procrastinate brings it in anyway
+python-dateutil==2.9.0.post0
 psycopg[binary]==3.3.6
+# Push notifications sign in to Firebase with these (notifications/push.py); allauth brings them in anyway
+PyJWT==2.15.1
+requests==2.32.4
 pillow==11.3.0
 argon2-cffi==25.1.0
 cryptography==50.0.2

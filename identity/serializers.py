@@ -4,7 +4,7 @@ from django.urls import reverse
 from rest_framework import serializers
 
 from billing import payload as billing_payload
-from .models import AppUser, UserSettings
+from .models import DEFAULT_TIMEZONE, SATURDAY, AppUser, UserSettings, validate_timezone
 
 
 class UserProfileSerializer(serializers.ModelSerializer):
@@ -14,17 +14,20 @@ class UserProfileSerializer(serializers.ModelSerializer):
     # Kept on UserSettings, shown here so the app needs one call after login
     onboarded_at = serializers.DateTimeField(required=False, allow_null=True)
     primary_mode = serializers.ChoiceField(choices=UserSettings.MODE_CHOICES, required=False, allow_blank=True)
+    # The phone's time zone (an IANA name) and the day the user's week starts on, Monday as 0
+    timezone = serializers.CharField(required=False, max_length=64, validators=[validate_timezone])
+    week_start = serializers.IntegerField(required=False, min_value=0, max_value=6)
     # The plan and what it gives, so the app knows after login without a second call.
     # Read-only: nothing a client sends can change it.
     entitlements = serializers.SerializerMethodField()
 
-    SETTINGS_FIELDS = ('onboarded_at', 'primary_mode')
+    SETTINGS_FIELDS = ('onboarded_at', 'primary_mode', 'timezone', 'week_start')
 
     class Meta:
         model = AppUser
         fields = ('id', 'email', 'username', 'first_name', 'last_name',
                  'full_name', 'bio', 'phone', 'avatar_url', 'has_password', 'date_joined',
-                 'onboarded_at', 'primary_mode', 'entitlements')
+                 'onboarded_at', 'primary_mode', 'timezone', 'week_start', 'entitlements')
         # The username changes through /me/username/ (password-checked), the picture through /me/avatar/
         read_only_fields = ('id', 'email', 'username', 'date_joined')
 
@@ -50,6 +53,8 @@ class UserProfileSerializer(serializers.ModelSerializer):
             if user_settings and user_settings.onboarded_at else None
         )
         data['primary_mode'] = user_settings.primary_mode if user_settings else ''
+        data['timezone'] = user_settings.timezone if user_settings else DEFAULT_TIMEZONE
+        data['week_start'] = user_settings.week_start if user_settings else SATURDAY
         return data
 
     def update(self, instance, validated_data):

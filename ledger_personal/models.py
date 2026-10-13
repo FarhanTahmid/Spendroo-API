@@ -79,6 +79,8 @@ class Transaction(WorkspaceOwnedModel):
         ('email', 'Email'),
         ('upload', 'Statement upload'),
         ('ai', 'AI'),
+        # Recorded by the server from a recurring rule
+        ('recurring', 'Recurring'),
     ]
 
     account = models.ForeignKey(Account, on_delete=models.CASCADE, related_name='transactions')
@@ -92,6 +94,13 @@ class Transaction(WorkspaceOwnedModel):
     occurred_on = models.DateField()
     note = models.CharField(max_length=200, blank=True, default='')
     source = models.CharField(max_length=10, choices=SOURCE_CHOICES, default='manual')
+    # Filed under several categories at once: parts that add up to the amount
+    # (allocations.py). While there are any, `category` is left empty.
+    splits = models.JSONField(default=list, blank=True)
+    # The date of a recurring rule this settles (reminders/). Both legs of a transfer carry it.
+    occurrence = models.ForeignKey(
+        'reminders.Occurrence', on_delete=models.SET_NULL, null=True, blank=True, related_name='transactions',
+    )
 
     class Meta:
         ordering = ['-occurred_on', '-created_at']
@@ -112,6 +121,19 @@ class Transaction(WorkspaceOwnedModel):
                 ),
                 name='transaction_sign_matches_kind',
             ),
+            # An occurrence is settled once: confirming it on two phones keeps the first
+            models.UniqueConstraint(
+                fields=['occurrence'], condition=Q(deleted_at__isnull=True) & ~Q(kind='transfer'),
+                name='one_transaction_per_occurrence',
+            ),
+            models.UniqueConstraint(
+                fields=['occurrence'], condition=Q(deleted_at__isnull=True, kind='transfer', amount_minor__lt=0),
+                name='one_transfer_out_per_occurrence',
+            ),
+            models.UniqueConstraint(
+                fields=['occurrence'], condition=Q(deleted_at__isnull=True, kind='transfer', amount_minor__gt=0),
+                name='one_transfer_in_per_occurrence',
+            ),
         ]
 
     def __str__(self):
@@ -121,6 +143,8 @@ class Transaction(WorkspaceOwnedModel):
         return self.account.workspace_id
 
     def clean(self):
+        from .allocations import cleaned
+        self.splits = cleaned(self.splits, self.kind, self.amount_minor)
         # A transfer is two rows sharing transfer_group_id: money leaves one
         # account and arrives in another. Each leg is pushed on its own, so the
         # pair is checked against whichever leg is already stored.
@@ -137,6 +161,8 @@ class Transaction(WorkspaceOwnedModel):
 
     def save(self, *args, **kwargs):
         self.currency = self.account.currency
+        if self.splits:
+            self.category = None
         super().save(*args, **kwargs)
 
 

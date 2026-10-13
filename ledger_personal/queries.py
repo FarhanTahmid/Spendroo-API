@@ -17,6 +17,7 @@ from django.db.models.functions import Abs, Cast
 from rest_framework.exceptions import ParseError
 
 from spendroo.money import currency_exponent
+from . import allocations
 from .models import Transaction
 
 KINDS = tuple(kind for kind, _ in Transaction.KIND_CHOICES)
@@ -39,8 +40,12 @@ class Filters:
     q: str = ''
 
     @property
+    def by_category(self):
+        return bool(self.category_ids or self.uncategorised)
+
+    @property
     def is_narrowed(self):
-        return bool(self.kind or self.category_ids or self.uncategorised or self.q)
+        return bool(self.kind or self.by_category or self.q)
 
 
 def _date(params, name):
@@ -113,14 +118,9 @@ def _narrow(account, filters):
     condition = Q()
     if filters.kind:
         condition &= Q(kind=filters.kind)
-    if filters.category_ids or filters.uncategorised:
-        either = Q()
-        if filters.category_ids:
-            either |= Q(category_id__in=filters.category_ids)
-        if filters.uncategorised:
-            # A transfer never has a category; "uncategorised" means income and expenses
-            either |= Q(category__isnull=True) & ~Q(kind='transfer')
-        condition &= either
+    if filters.by_category:
+        # A split is kept when any of its parts is; _split_parts() says how much of it counts
+        condition &= allocations.condition(filters.category_ids, filters.uncategorised)
     if filters.q:
         either = (
             Q(note__icontains=filters.q) | Q(category_name__icontains=filters.q)
@@ -149,6 +149,22 @@ def filtered(account, filters):
     return _with_units(account_transactions(account), account).filter(_period(filters), _narrow(account, filters))
 
 
+def _split_parts(account, queryset, filters):
+    """
+    (day, kind, category id, amount) for each part of the split transactions
+    in `queryset` that the filter's categories keep.
+    """
+    alive = allocations.categories_of(account.workspace_id)
+    return [
+        (row['occurred_on'], row['kind'], category_id if category_id in alive else None, amount)
+        for row in allocations.split_only(queryset).order_by().values('occurred_on', 'kind', 'amount_minor', 'splits')
+        for category_id, amount, _ in allocations.kept(
+            allocations.parts(row['amount_minor'], None, row['splits']),
+            filters.category_ids, filters.uncategorised, alive,
+        )
+    ]
+
+
 def _total(queryset, condition=Q()):
     return queryset.filter(condition).aggregate(total=Sum('amount_minor'))['total'] or 0
 
@@ -159,7 +175,10 @@ def balance_of(account):
 
 def summarize(account, filters):
     """What moved inside the filter (all positive), and the balance on either side of the period."""
-    totals = filtered(account, filters).aggregate(
+    rows = filtered(account, filters)
+    # Under a choice of categories a split counts for its chosen parts only
+    partial = _split_parts(account, rows, filters) if filters.by_category else []
+    totals = rows.aggregate(
         income=Sum('amount_minor', filter=Q(kind='income')),
         expense=Sum('amount_minor', filter=Q(kind='expense')),
         transfer_in=Sum('amount_minor', filter=Q(kind='transfer', amount_minor__gt=0)),
@@ -170,6 +189,19 @@ def summarize(account, filters):
         first_day=Min('occurred_on'),
         last_day=Max('occurred_on'),
     )
+    if filters.by_category:
+        whole = allocations.unsplit_only(rows).aggregate(
+            income=Sum('amount_minor', filter=Q(kind='income')),
+            expense=Sum('amount_minor', filter=Q(kind='expense')),
+            largest=Min('amount_minor', filter=Q(kind='expense')),
+        )
+        kept = {kind: sum(amount for _, part_kind, _, amount in partial if part_kind == kind)
+                for kind in allocations.PLAIN_KINDS}
+        totals['income'] = (whole['income'] or 0) + kept['income']
+        totals['expense'] = (whole['expense'] or 0) + kept['expense']
+        totals['largest'] = min(
+            [whole['largest'] or 0, *(amount for _, part_kind, _, amount in partial if part_kind == 'expense')]
+        )
     income, expense = totals['income'] or 0, -(totals['expense'] or 0)
     transfer_in, transfer_out = totals['transfer_in'] or 0, -(totals['transfer_out'] or 0)
     everything = Transaction.objects.filter(account=account)
@@ -194,20 +226,28 @@ def summarize(account, filters):
 
 
 def by_category(account, filters, kind):
-    """Expense or income per category inside the filter, largest first."""
-    rows = (
-        filtered(account, filters).filter(kind=kind)
-        .annotate(shown_category=_alive_category('id', UUIDField()))
-        .order_by().values('shown_category', 'category_name', 'category_color')
-        .annotate(total=Abs(Sum('amount_minor')), n=Count('id'), largest=Max(Abs(F('amount_minor'))))
-        .order_by('-total')
-    )
+    """Expense or income per category inside the filter, largest first. Each part of a split counts under its own."""
+    alive = allocations.categories_of(account.workspace_id)
+    rows = filtered(account, filters).filter(kind=kind).order_by().values('amount_minor', 'category_id', 'splits')
+    found = {}
+    for row in rows:
+        chosen = allocations.kept(
+            allocations.parts(row['amount_minor'], row['category_id'], row['splits']),
+            filters.category_ids, filters.uncategorised, alive,
+        )
+        for category_id, amount, _ in chosen:
+            # A deleted category reads as no category, as it does in the app
+            key = category_id if category_id in alive else None
+            total = found.setdefault(key, {'amount_minor': 0, 'count': 0, 'largest_minor': 0})
+            total['amount_minor'] += abs(amount)
+            total['count'] += 1
+            total['largest_minor'] = max(total['largest_minor'], abs(amount))
     return [
         {
-            'category_id': row['shown_category'], 'name': row['category_name'], 'color': row['category_color'],
-            'amount_minor': row['total'], 'count': row['n'], 'largest_minor': row['largest'],
+            'category_id': key, 'name': alive[key][0] if key else None, 'color': alive[key][1] if key else None,
+            **total,
         }
-        for row in rows
+        for key, total in sorted(found.items(), key=lambda item: -item[1]['amount_minor'])
     ]
 
 
@@ -218,8 +258,16 @@ def series(account, filters):
     filter; the balance counts every transaction, as a balance must.
     """
     narrow = _narrow(account, filters)
+    everything = _with_units(account_transactions(account), account).filter(_period(filters))
+    partial = {}
+    if filters.by_category:
+        # Whole rows are added up below; a split adds only the parts the categories keep
+        for day, _, _, amount in _split_parts(account, everything.filter(narrow), filters):
+            moved = partial.setdefault(day, [0, 0])
+            moved[0 if amount > 0 else 1] += amount
+        narrow &= Q(splits=[])
     days = list(
-        _with_units(account_transactions(account), account).filter(_period(filters))
+        everything
         .order_by().values('occurred_on')
         .annotate(
             net=Sum('amount_minor'),
@@ -240,7 +288,8 @@ def series(account, filters):
     for day in days:
         step = day['occurred_on'].replace(day=1) if monthly else day['occurred_on']
         balance += day['net']
-        cash_in, cash_out = day['cash_in'] or 0, -(day['cash_out'] or 0)
+        part_in, part_out = partial.get(day['occurred_on'], (0, 0))
+        cash_in, cash_out = (day['cash_in'] or 0) + part_in, -((day['cash_out'] or 0) + part_out)
         if points and points[-1]['date'] == step:
             points[-1]['in_minor'] += cash_in
             points[-1]['out_minor'] += cash_out

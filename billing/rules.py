@@ -7,6 +7,7 @@ disagree about what "4 accounts" means.
 """
 from cashbook.models import CashBook
 from ledger_personal.models import Account, Category
+from reminders.models import Rule
 from workspaces.models import Membership, Workspace
 
 from .catalog.keys import F
@@ -52,6 +53,17 @@ class CustomCategories(LimitRule):
         return obj.name
 
 
+class StandaloneReminders(LimitRule):
+    feature = F.REMINDERS_STANDALONE
+    noun = 'reminder'
+
+    def queryset(self, owner, workspace):
+        return Rule.objects.filter(workspace=workspace, kind=Rule.KIND_REMINDER, is_paused=False)
+
+    def label(self, obj):
+        return obj.title
+
+
 class Cashbooks(LimitRule):
     feature = F.BUSINESS_CASHBOOKS
     noun = 'cashbook'
@@ -88,7 +100,7 @@ class TeamSeats(LimitRule):
 
 
 RULES = {rule.feature.key: rule for rule in (
-    PersonalAccounts(), CustomCategories(), Cashbooks(), BusinessWorkspaces(), TeamSeats(),
+    PersonalAccounts(), CustomCategories(), StandaloneReminders(), Cashbooks(), BusinessWorkspaces(), TeamSeats(),
 )}
 
 

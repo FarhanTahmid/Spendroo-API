@@ -4,6 +4,8 @@ from datetime import datetime
 
 from django.db.models import Case, CharField, F, When
 
+from ledger_personal import allocations
+
 from .. import narrow as narrowing
 from ..document import COUNT, MONEY, SHARE, TONE_IN, TONE_OUT, Column, Money, Report, Table
 from ..labels import Words
@@ -46,6 +48,53 @@ def alive_name(relation, field):
         When(**{f'{relation}__deleted_at__isnull': True}, then=F(f'{relation}__{field}')),
         output_field=CharField(),
     )
+
+
+def _kept(row, narrow, alive):
+    return allocations.kept(
+        allocations.parts(row['amount_minor'], row['category_id'], row['splits']),
+        narrow.category_ids, narrow.uncategorised, alive,
+    )
+
+
+def filed(line, narrow, alive, words):
+    """
+    (category label, amount) of a personal transaction as a report shows it.
+    Under a choice of categories a split counts for its chosen parts only.
+    """
+    if not line.splits:
+        return line.category_name or words.t('row.uncategorised'), line.amount_minor
+    kept = _kept({'amount_minor': line.amount_minor, 'category_id': None, 'splits': line.splits}, narrow, alive)
+    names = dict.fromkeys(
+        alive[category_id][0] if category_id in alive else words.t('row.uncategorised') for category_id, _, _ in kept
+    )
+    return words.t('row.split', names=', '.join(names)), sum(amount for _, amount, _ in kept)
+
+
+def split_sums(queryset, narrow, alive):
+    """kind -> what the split transactions of `queryset` count for under the choice of categories, signed."""
+    sums = {}
+    for row in allocations.split_only(queryset).order_by().values('kind', 'currency', 'amount_minor', 'splits'):
+        row['category_id'] = None
+        key = (row['currency'], row['kind'])
+        sums[key] = sums.get(key, 0) + sum(amount for _, amount, _ in _kept(row, narrow, alive))
+    return sums
+
+
+def category_shares(rows, narrow, alive, words):
+    """
+    (name, count, amount) per category for share_table, each part of a split
+    under its own. `rows` hold amount_minor, category_id and splits.
+    """
+    found = {}
+    for row in rows:
+        for category_id, amount, _ in _kept(row, narrow, alive):
+            # A deleted category reads as none, as the app shows it
+            name = alive[category_id][0] if category_id in alive else words.t('row.uncategorised')
+            total = found.setdefault(name, [0, 0])
+            total[0] += 1
+            total[1] += abs(amount)
+    return [(name, count, amount) for name, (count, amount) in found.items()]
 
 
 def money(amount_minor, currency):

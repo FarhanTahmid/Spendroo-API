@@ -45,6 +45,7 @@ VALUES = {
     F.INSIGHTS_YEAR_REVIEW: (False, True, True),
     F.INSIGHTS_TREND_MONTHS: (6, 24, 24),
     F.RECURRING_TRANSACTIONS: (False, True, True),
+    F.REMINDERS_STANDALONE: (3, UNLIMITED, UNLIMITED),
     F.SAVINGS_GOALS: (False, True, True),
     F.HOME_WIDGET: (False, True, True),
 

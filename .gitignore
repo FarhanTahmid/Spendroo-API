@@ -144,3 +144,6 @@ openapi.yml
 
 # Staging secrets (copy from .env.staging.example)
 .env.staging
+
+# Keys kept beside the code on a developer machine (FCM_CREDENTIALS_FILE)
+/secrets/

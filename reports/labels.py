@@ -138,6 +138,7 @@ TEXT = {
         'row.transfer_to': 'Transfer to {name}',
         'row.transfer_from': 'Transfer from {name}',
         'row.transfer': 'Transfer',
+        'row.split': 'Split: {names}',
         'row.archived': '{name} (archived)',
 
         'kind.cash': 'Cash',
@@ -260,6 +261,7 @@ TEXT = {
         'row.transfer_to': '{name}-এ ট্রান্সফার',
         'row.transfer_from': '{name} থেকে ট্রান্সফার',
         'row.transfer': 'ট্রান্সফার',
+        'row.split': 'ভাগ করা: {names}',
         'row.archived': '{name} (আর্কাইভ করা)',
 
         'kind.cash': 'নগদ',

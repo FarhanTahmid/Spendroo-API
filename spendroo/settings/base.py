@@ -87,6 +87,7 @@ LOCAL_APPS=[
     'notifications',
     'cashbook',
     'ledger_personal',
+    'reminders',
     'sync',
     'billing',
     'reports',
@@ -186,6 +187,10 @@ SOCIALACCOUNT_PROVIDERS = {
 SOCIALACCOUNT_EMAIL_AUTHENTICATION = True
 SOCIALACCOUNT_EMAIL_AUTHENTICATION_AUTO_CONNECT = True
 
+# Push notifications: the path of the Firebase service-account key file (Firebase console,
+# Project settings, Service accounts). Empty: nothing is pushed, everything else works.
+FCM_CREDENTIALS_FILE = config('FCM_CREDENTIALS_FILE', default='')
+
 # Email. EMAIL_BACKEND is set per environment; the worker delivers queued
 # mail through EMAIL_DELIVERY_BACKEND unless an SMTP account is set up in the admin.
 DEFAULT_FROM_EMAIL = config('DEFAULT_FROM_EMAIL', default='Spendroo <no-reply@localhost>')
@@ -275,6 +280,7 @@ REST_FRAMEWORK = {
         'sync': '6000/hour',
         'username_check': '60/minute',
         'profile_sensitive': '10/hour',
+        'push_test': '10/hour',
         # Low, so promo codes cannot be guessed
         'promo_redeem': '10/hour',
         'billing_keep': '30/hour',
@@ -353,6 +359,26 @@ UNFOLD = {
                      'permission': _can('billing.view_entitlementoverride')},
                     {'title': 'Workspaces', 'icon': 'store', 'link': _admin_link('workspaces_workspace_changelist'),
                      'permission': _can('workspaces.view_workspace')},
+                ],
+            },
+            {
+                'title': 'Recurring',
+                'separator': True,
+                'items': [
+                    {'title': 'Rules', 'icon': 'event_repeat', 'link': _admin_link('reminders_rule_changelist'),
+                     'permission': _can('reminders.view_rule')},
+                    {'title': 'Occurrences', 'icon': 'event_available',
+                     'link': _admin_link('reminders_occurrence_changelist'),
+                     'permission': _can('reminders.view_occurrence')},
+                    {'title': 'Inbox items', 'icon': 'notifications',
+                     'link': _admin_link('reminders_inboxitem_changelist'),
+                     'permission': _can('reminders.view_inboxitem')},
+                    {'title': 'Devices', 'icon': 'smartphone',
+                     'link': _admin_link('notifications_device_changelist'),
+                     'permission': _can('notifications.view_device')},
+                    {'title': 'Notification preferences', 'icon': 'notifications_active',
+                     'link': _admin_link('notifications_notificationpreference_changelist'),
+                     'permission': _can('notifications.view_notificationpreference')},
                 ],
             },
             {

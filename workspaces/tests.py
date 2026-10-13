@@ -13,7 +13,7 @@ User = get_user_model()
 
 # Apps whose models hold tenant data. Each model must carry the workspace key
 # and its table must have row-level security, unless listed as exempt.
-TENANT_APPS = ['cashbook', 'ledger_personal']
+TENANT_APPS = ['cashbook', 'ledger_personal', 'reminders']
 EXEMPT_MODELS = set()
 
 

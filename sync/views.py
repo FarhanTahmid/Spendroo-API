@@ -15,6 +15,7 @@ from billing import gates
 from billing.entitlements import forget_counts
 from billing.models import Stamp
 from workspaces.models import Workspace
+from reminders.tasks import budgets_changed
 from workspaces.tenancy import TenantScopedMixin
 from .models import SyncMutation
 from .registry import TABLES, accessible_cashbook_ids
@@ -22,6 +23,7 @@ from .registry import TABLES, accessible_cashbook_ids
 DEFAULT_PULL_LIMIT = 500
 MAX_PULL_LIMIT = 1000
 MAX_PUSH_MUTATIONS = 200
+BUDGET_TABLES = ('transactions', 'budgets')
 
 
 # Shapes for the API schema only; the views validate by hand so that one bad
@@ -180,7 +182,11 @@ class PushView(TenantScopedMixin, APIView):
                 {'detail': f'mutations must be a list of at most {MAX_PUSH_MUTATIONS}.'},
                 status=status.HTTP_400_BAD_REQUEST,
             )
-        return Response({'results': [self.process(request.user, workspace, role, m) for m in mutations]})
+        results = [self.process(request.user, workspace, role, m) for m in mutations]
+        # What was spent or what may be spent changed: the budget alerts are looked at shortly
+        if any(isinstance(m, dict) and m.get('table') in BUDGET_TABLES for m in mutations):
+            budgets_changed(workspace.id)
+        return Response({'results': results})
 
     def process(self, user, workspace, role, mutation):
         try:
@@ -243,7 +249,7 @@ class PushView(TenantScopedMixin, APIView):
         if op == 'delete':
             if obj is None or obj.deleted_at is not None:
                 return  # already gone: deleting twice is not an error
-            if not table.can_write(user, role, obj, 'delete'):
+            if not table.client_deletes or not table.can_write(user, role, obj, 'delete'):
                 raise Rejected('forbidden', 'You may not delete this.')
             obj.soft_delete()
             return
@@ -252,6 +258,8 @@ class PushView(TenantScopedMixin, APIView):
         if not creating and obj.deleted_at is not None:
             raise Rejected('deleted', 'The row was deleted.')
         if creating:
+            if not table.client_creates:
+                raise Rejected('forbidden', 'Only the server makes these.')
             obj = table.model(id=row_id, workspace=workspace)
 
         # Old values of what this push changes, for the plan gates
@@ -262,8 +270,9 @@ class PushView(TenantScopedMixin, APIView):
             if not creating and column in table.immutable and str(getattr(obj, column)) != str(value):
                 raise Rejected('immutable', f'{column} cannot change.')
             field = table.model._meta.get_field(column)
-            if isinstance(field, models.IntegerField) and (isinstance(value, bool) or not isinstance(value, int)):
-                raise Rejected('invalid', f'{column} must be an integer.')
+            if isinstance(field, models.IntegerField) and not (value is None and field.null):
+                if isinstance(value, bool) or not isinstance(value, int):
+                    raise Rejected('invalid', f'{column} must be an integer.')
             if before is not None:
                 before[column] = getattr(obj, column)
             setattr(obj, column, value)
@@ -296,6 +305,7 @@ class PushView(TenantScopedMixin, APIView):
         gates.assert_workspace_writable(workspace, user)
         for gate in table.plan_gates:
             gate.check(workspace, obj, creating, before)
+        table.on_write(workspace, user, obj, creating, before)
         if creating and hasattr(obj, 'created_by_id'):
             obj.created_by = user
         obj.save(force_insert=creating)

@@ -5,6 +5,7 @@ from openpyxl import load_workbook
 
 from billing.testing import grant_plan
 from cashbook.models import EntryCategory
+from ledger_personal.models import Category
 from reports.builders import account, business, cashbook, personal
 from reports.document import Money, Totals, net
 from reports.models import ReportDownload
@@ -39,6 +40,23 @@ class NarrowedBuilderTests(ReportTestCase):
         self.assertEqual(report.filters, [('Categories', 'Food')])
         self.assertEqual([row[1] for row in self.table(report, 'Statement').rows], ['Lunch 50% off'])
         self.assertEqual(report.totals, [net('BDT', 0, 45000)])
+
+    def test_a_split_narrowed_to_a_category_counts_for_that_part(self):
+        transport = Category.objects.get(workspace=self.personal, name='Transport')
+        self.split('expense', '2026-10-06', [(self.food, 20000), (transport, 10000), (None, 20000)], note='ATM cash')
+        narrow = Narrow(category_ids=(self.food.id,), uncategorised=True, category_names=('Food',))
+        report = account.build(self.cash, self.context(narrow=narrow))
+        self.assertEqual(report.totals, [net('BDT', 0, 115000)])
+        statement = self.table(report, 'Statement')
+        self.assertEqual(statement.rows[-1][1:], ['ATM cash', 'Split: Food, Uncategorised', None, taka(40000)])
+        self.assertEqual(statement.total, [None, 'Total', '', taka(0), taka(115000)])
+        self.assertEqual(self.table(report, 'Spending by category').total[2], taka(115000))
+
+        whole = personal.build(self.personal, self.context(narrow=Narrow(category_ids=(transport.id,))))
+        self.assertEqual(whole.totals, [net('BDT', 0, 10000)])
+        self.assertEqual(self.table(whole, 'Income and spending').rows, [
+            [statement.rows[-1][0], 'Cash', 'Split: Transport', 'ATM cash', None, taka(10000)],
+        ])
 
     def test_uncategorised_means_income_and_spending_with_no_category(self):
         report = account.build(self.cash, self.context(narrow=Narrow(uncategorised=True)))

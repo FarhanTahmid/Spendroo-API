@@ -50,7 +50,14 @@ class F:
     INSIGHTS_TREND_MONTHS = FeatureKey(
         'insights.trend_months', LIMIT, 'Insights: trend length', 'Longest trend the app may draw.', unit='months',
     )
-    RECURRING_TRANSACTIONS = FeatureKey('recurring.transactions', FLAG, 'Recurring transactions and reminders')
+    RECURRING_TRANSACTIONS = FeatureKey(
+        'recurring.transactions', FLAG, 'Recurring transactions and reminders',
+        'Transactions recorded or asked about on a schedule. Plain reminders are counted on their own.',
+    )
+    REMINDERS_STANDALONE = FeatureKey(
+        'reminders.standalone', LIMIT, 'Reminders',
+        'Reminders with nothing to record, in use at one time. Paused ones do not count.',
+    )
     SAVINGS_GOALS = FeatureKey('goals.savings', FLAG, 'Savings goals')
     HOME_WIDGET = FeatureKey('widget.home', FLAG, 'Home-screen widget')
 

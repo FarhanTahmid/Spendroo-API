@@ -1,0 +1,564 @@
+{
+ "version": 1,
+ "about": "Dates each schedule falls on, counted from `from`. Shared by the server (reminders/schedule.py) and the app (lib/features/recurring/recurrence.dart): change both copies together.",
+ "cases": [
+  {
+   "name": "once, seen from before",
+   "rule": {
+    "freq": "once",
+    "interval": 1,
+    "weekday_mask": 0,
+    "month_day": null,
+    "set_pos": null,
+    "week_start": 5,
+    "start_on": "2026-10-20",
+    "end_on": null
+   },
+   "from": "2026-10-01",
+   "expect": [
+    "2026-10-20"
+   ]
+  },
+  {
+   "name": "once, already gone by",
+   "rule": {
+    "freq": "once",
+    "interval": 1,
+    "weekday_mask": 0,
+    "month_day": null,
+    "set_pos": null,
+    "week_start": 5,
+    "start_on": "2026-10-20",
+    "end_on": null
+   },
+   "from": "2026-10-21",
+   "expect": []
+  },
+  {
+   "name": "every day",
+   "rule": {
+    "freq": "daily",
+    "interval": 1,
+    "weekday_mask": 0,
+    "month_day": null,
+    "set_pos": null,
+    "week_start": 5,
+    "start_on": "2026-10-13",
+    "end_on": null
+   },
+   "from": "2026-10-13",
+   "expect": [
+    "2026-10-13",
+    "2026-10-14",
+    "2026-10-15",
+    "2026-10-16"
+   ]
+  },
+  {
+   "name": "every 3 days, joined midway",
+   "rule": {
+    "freq": "daily",
+    "interval": 3,
+    "weekday_mask": 0,
+    "month_day": null,
+    "set_pos": null,
+    "week_start": 5,
+    "start_on": "2026-10-01",
+    "end_on": null
+   },
+   "from": "2026-10-05",
+   "expect": [
+    "2026-10-07",
+    "2026-10-10",
+    "2026-10-13",
+    "2026-10-16"
+   ]
+  },
+  {
+   "name": "every 3 days until an end date",
+   "rule": {
+    "freq": "daily",
+    "interval": 3,
+    "weekday_mask": 0,
+    "month_day": null,
+    "set_pos": null,
+    "week_start": 5,
+    "start_on": "2026-10-01",
+    "end_on": "2026-10-12"
+   },
+   "from": "2026-10-05",
+   "expect": [
+    "2026-10-07",
+    "2026-10-10"
+   ]
+  },
+  {
+   "name": "weekly on the weekday it started",
+   "rule": {
+    "freq": "weekly",
+    "interval": 1,
+    "weekday_mask": 0,
+    "month_day": null,
+    "set_pos": null,
+    "week_start": 5,
+    "start_on": "2026-10-13",
+    "end_on": null
+   },
+   "from": "2026-10-13",
+   "expect": [
+    "2026-10-13",
+    "2026-10-20",
+    "2026-10-27",
+    "2026-11-03"
+   ]
+  },
+  {
+   "name": "weekly on several days",
+   "rule": {
+    "freq": "weekly",
+    "interval": 1,
+    "weekday_mask": 21,
+    "month_day": null,
+    "set_pos": null,
+    "week_start": 5,
+    "start_on": "2026-10-13",
+    "end_on": null
+   },
+   "from": "2026-10-13",
+   "expect": [
+    "2026-10-14",
+    "2026-10-16",
+    "2026-10-19",
+    "2026-10-21",
+    "2026-10-23",
+    "2026-10-26"
+   ]
+  },
+  {
+   "name": "every 2 weeks on Sat and Tue, weeks starting Saturday",
+   "rule": {
+    "freq": "weekly",
+    "interval": 2,
+    "weekday_mask": 34,
+    "month_day": null,
+    "set_pos": null,
+    "week_start": 5,
+    "start_on": "2026-10-13",
+    "end_on": null
+   },
+   "from": "2026-10-13",
+   "expect": [
+    "2026-10-13",
+    "2026-10-24",
+    "2026-10-27",
+    "2026-11-07",
+    "2026-11-10",
+    "2026-11-21"
+   ]
+  },
+  {
+   "name": "every 2 weeks on Sat and Tue, weeks starting Monday",
+   "rule": {
+    "freq": "weekly",
+    "interval": 2,
+    "weekday_mask": 34,
+    "month_day": null,
+    "set_pos": null,
+    "week_start": 0,
+    "start_on": "2026-10-13",
+    "end_on": null
+   },
+   "from": "2026-10-13",
+   "expect": [
+    "2026-10-13",
+    "2026-10-17",
+    "2026-10-27",
+    "2026-10-31",
+    "2026-11-10",
+    "2026-11-14"
+   ]
+  },
+  {
+   "name": "every 2 weeks, asked in a week it skips",
+   "rule": {
+    "freq": "weekly",
+    "interval": 2,
+    "weekday_mask": 34,
+    "month_day": null,
+    "set_pos": null,
+    "week_start": 5,
+    "start_on": "2026-10-13",
+    "end_on": null
+   },
+   "from": "2026-10-18",
+   "expect": [
+    "2026-10-24",
+    "2026-10-27",
+    "2026-11-07"
+   ]
+  },
+  {
+   "name": "every 4 weeks on Friday across a year end",
+   "rule": {
+    "freq": "weekly",
+    "interval": 4,
+    "weekday_mask": 16,
+    "month_day": null,
+    "set_pos": null,
+    "week_start": 5,
+    "start_on": "2026-12-04",
+    "end_on": null
+   },
+   "from": "2026-12-04",
+   "expect": [
+    "2026-12-04",
+    "2027-01-01",
+    "2027-01-29",
+    "2027-02-26"
+   ]
+  },
+  {
+   "name": "monthly on the day it started",
+   "rule": {
+    "freq": "monthly",
+    "interval": 1,
+    "weekday_mask": 0,
+    "month_day": null,
+    "set_pos": null,
+    "week_start": 5,
+    "start_on": "2026-10-13",
+    "end_on": null
+   },
+   "from": "2026-10-13",
+   "expect": [
+    "2026-10-13",
+    "2026-11-13",
+    "2026-12-13",
+    "2027-01-13"
+   ]
+  },
+  {
+   "name": "monthly on the 31st: short months use their last day",
+   "rule": {
+    "freq": "monthly",
+    "interval": 1,
+    "weekday_mask": 0,
+    "month_day": 31,
+    "set_pos": null,
+    "week_start": 5,
+    "start_on": "2026-01-31",
+    "end_on": null
+   },
+   "from": "2026-01-01",
+   "expect": [
+    "2026-01-31",
+    "2026-02-28",
+    "2026-03-31",
+    "2026-04-30",
+    "2026-05-31",
+    "2026-06-30",
+    "2026-07-31",
+    "2026-08-31",
+    "2026-09-30",
+    "2026-10-31",
+    "2026-11-30",
+    "2026-12-31",
+    "2027-01-31"
+   ]
+  },
+  {
+   "name": "monthly on the 30th through a leap February",
+   "rule": {
+    "freq": "monthly",
+    "interval": 1,
+    "weekday_mask": 0,
+    "month_day": 30,
+    "set_pos": null,
+    "week_start": 5,
+    "start_on": "2027-12-30",
+    "end_on": null
+   },
+   "from": "2027-12-30",
+   "expect": [
+    "2027-12-30",
+    "2028-01-30",
+    "2028-02-29",
+    "2028-03-30"
+   ]
+  },
+  {
+   "name": "monthly on the last day",
+   "rule": {
+    "freq": "monthly",
+    "interval": 1,
+    "weekday_mask": 0,
+    "month_day": -1,
+    "set_pos": null,
+    "week_start": 5,
+    "start_on": "2026-10-13",
+    "end_on": null
+   },
+   "from": "2026-10-13",
+   "expect": [
+    "2026-10-31",
+    "2026-11-30",
+    "2026-12-31",
+    "2027-01-31",
+    "2027-02-28"
+   ]
+  },
+  {
+   "name": "monthly on the 5th, started after the 5th",
+   "rule": {
+    "freq": "monthly",
+    "interval": 1,
+    "weekday_mask": 0,
+    "month_day": 5,
+    "set_pos": null,
+    "week_start": 5,
+    "start_on": "2026-10-13",
+    "end_on": null
+   },
+   "from": "2026-10-13",
+   "expect": [
+    "2026-11-05",
+    "2026-12-05",
+    "2027-01-05"
+   ]
+  },
+  {
+   "name": "every 3 months (quarterly)",
+   "rule": {
+    "freq": "monthly",
+    "interval": 3,
+    "weekday_mask": 0,
+    "month_day": null,
+    "set_pos": null,
+    "week_start": 5,
+    "start_on": "2026-01-15",
+    "end_on": null
+   },
+   "from": "2026-02-01",
+   "expect": [
+    "2026-04-15",
+    "2026-07-15",
+    "2026-10-15",
+    "2027-01-15"
+   ]
+  },
+  {
+   "name": "first Friday of the month",
+   "rule": {
+    "freq": "monthly",
+    "interval": 1,
+    "weekday_mask": 16,
+    "month_day": null,
+    "set_pos": 1,
+    "week_start": 5,
+    "start_on": "2026-10-01",
+    "end_on": null
+   },
+   "from": "2026-10-13",
+   "expect": [
+    "2026-11-06",
+    "2026-12-04",
+    "2027-01-01",
+    "2027-02-05"
+   ]
+  },
+  {
+   "name": "last Friday of the month",
+   "rule": {
+    "freq": "monthly",
+    "interval": 1,
+    "weekday_mask": 16,
+    "month_day": null,
+    "set_pos": -1,
+    "week_start": 5,
+    "start_on": "2026-10-01",
+    "end_on": null
+   },
+   "from": "2026-10-13",
+   "expect": [
+    "2026-10-30",
+    "2026-11-27",
+    "2026-12-25",
+    "2027-01-29"
+   ]
+  },
+  {
+   "name": "fourth Thursday of the month",
+   "rule": {
+    "freq": "monthly",
+    "interval": 1,
+    "weekday_mask": 8,
+    "month_day": null,
+    "set_pos": 4,
+    "week_start": 5,
+    "start_on": "2026-10-01",
+    "end_on": null
+   },
+   "from": "2026-10-01",
+   "expect": [
+    "2026-10-22",
+    "2026-11-26",
+    "2026-12-24"
+   ]
+  },
+  {
+   "name": "first working day of the month (Sun to Thu)",
+   "rule": {
+    "freq": "monthly",
+    "interval": 1,
+    "weekday_mask": 79,
+    "month_day": null,
+    "set_pos": 1,
+    "week_start": 5,
+    "start_on": "2026-10-01",
+    "end_on": null
+   },
+   "from": "2026-10-02",
+   "expect": [
+    "2026-11-01",
+    "2026-12-01",
+    "2027-01-03",
+    "2027-02-01"
+   ]
+  },
+  {
+   "name": "last working day of the month (Mon to Fri)",
+   "rule": {
+    "freq": "monthly",
+    "interval": 1,
+    "weekday_mask": 31,
+    "month_day": null,
+    "set_pos": -1,
+    "week_start": 5,
+    "start_on": "2026-10-01",
+    "end_on": null
+   },
+   "from": "2026-10-01",
+   "expect": [
+    "2026-10-30",
+    "2026-11-30",
+    "2026-12-31",
+    "2027-01-29"
+   ]
+  },
+  {
+   "name": "second Saturday every 2 months",
+   "rule": {
+    "freq": "monthly",
+    "interval": 2,
+    "weekday_mask": 32,
+    "month_day": null,
+    "set_pos": 2,
+    "week_start": 5,
+    "start_on": "2026-10-01",
+    "end_on": null
+   },
+   "from": "2026-10-01",
+   "expect": [
+    "2026-10-10",
+    "2026-12-12",
+    "2027-02-13",
+    "2027-04-10"
+   ]
+  },
+  {
+   "name": "yearly on the day it started",
+   "rule": {
+    "freq": "yearly",
+    "interval": 1,
+    "weekday_mask": 0,
+    "month_day": null,
+    "set_pos": null,
+    "week_start": 5,
+    "start_on": "2026-03-26",
+    "end_on": null
+   },
+   "from": "2026-10-13",
+   "expect": [
+    "2027-03-26",
+    "2028-03-26",
+    "2029-03-26"
+   ]
+  },
+  {
+   "name": "yearly on 29 February",
+   "rule": {
+    "freq": "yearly",
+    "interval": 1,
+    "weekday_mask": 0,
+    "month_day": null,
+    "set_pos": null,
+    "week_start": 5,
+    "start_on": "2024-02-29",
+    "end_on": null
+   },
+   "from": "2024-01-01",
+   "expect": [
+    "2024-02-29",
+    "2025-02-28",
+    "2026-02-28",
+    "2027-02-28",
+    "2028-02-29"
+   ]
+  },
+  {
+   "name": "every 2 years on the last day of the month",
+   "rule": {
+    "freq": "yearly",
+    "interval": 2,
+    "weekday_mask": 0,
+    "month_day": -1,
+    "set_pos": null,
+    "week_start": 5,
+    "start_on": "2026-02-10",
+    "end_on": null
+   },
+   "from": "2026-01-01",
+   "expect": [
+    "2026-02-28",
+    "2028-02-29",
+    "2030-02-28"
+   ]
+  },
+  {
+   "name": "yearly on the first Friday of its month",
+   "rule": {
+    "freq": "yearly",
+    "interval": 1,
+    "weekday_mask": 16,
+    "month_day": null,
+    "set_pos": 1,
+    "week_start": 5,
+    "start_on": "2026-12-01",
+    "end_on": null
+   },
+   "from": "2026-10-13",
+   "expect": [
+    "2026-12-04",
+    "2027-12-03",
+    "2028-12-01"
+   ]
+  },
+  {
+   "name": "monthly, ending before the next one",
+   "rule": {
+    "freq": "monthly",
+    "interval": 1,
+    "weekday_mask": 0,
+    "month_day": null,
+    "set_pos": null,
+    "week_start": 5,
+    "start_on": "2026-10-13",
+    "end_on": "2026-11-12"
+   },
+   "from": "2026-10-13",
+   "expect": [
+    "2026-10-13"
+   ]
+  }
+ ]
+}

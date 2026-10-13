@@ -1,13 +1,14 @@
 """The whole personal space: every account, income against spending."""
-from django.db.models import Count, Q, Sum
+from django.db.models import Q, Sum
 
+from ledger_personal import allocations
 from ledger_personal.models import Account, Transaction
 
 from .. import narrow as narrowing
 from ..document import DATE, MONEY, TONE_BALANCE, TONE_IN, TONE_OUT, Column, Money, Table, Totals, net
 from ..models import SCOPE_PERSONAL
 from .account import PLAIN
-from .common import alive_name, by_currency, money, share_table, titled
+from .common import alive_name, by_currency, category_shares, filed, money, share_table, split_sums, titled
 
 
 def _figures(transactions, period):
@@ -57,26 +58,22 @@ def _accounts_table(words, accounts, figures, currency, several):
     )
 
 
-def _category_tables(words, inside, kind, currencies):
-    rows = (
-        inside.filter(kind=kind).order_by()
-        .values('currency', name=alive_name('category', 'name'))
-        .annotate(total=Sum('amount_minor'), n=Count('id'))
-    )
+def _category_tables(words, inside, kind, currencies, narrow, alive):
+    rows = inside.filter(kind=kind).order_by().values('currency', 'amount_minor', 'category_id', 'splits')
     expense = kind == 'expense'
     title = words.t('table.spending_by_category' if expense else 'table.income_by_category')
     found = by_currency(rows, lambda row: row['currency'])
     return [
         share_table(
             words, titled(title, currency, len(currencies) > 1),
-            [(row['name'] or words.t('row.uncategorised'), row['n'], abs(row['total'])) for row in found.get(currency, [])],
+            category_shares(found.get(currency, []), narrow, alive, words),
             currency, TONE_OUT if expense else TONE_IN,
         )
         for currency in currencies
     ]
 
 
-def _income_and_spending(words, inside, currencies):
+def _income_and_spending(words, inside, currencies, narrow, alive):
     lines = (
         inside.exclude(kind='transfer').select_related('account')
         .annotate(category_name=alive_name('category', 'name'))
@@ -84,11 +81,12 @@ def _income_and_spending(words, inside, currencies):
     )
     rows, income, spending = [], 0, 0
     for line in lines:
-        income += max(line.amount_minor, 0)
-        spending += max(-line.amount_minor, 0)
+        what, amount = filed(line, narrow, alive, words)
+        income += max(amount, 0)
+        spending += max(-amount, 0)
         rows.append([
-            line.occurred_on, line.account.name, line.category_name or words.t('row.uncategorised'), line.note,
-            money(max(line.amount_minor, 0), line.currency), money(max(-line.amount_minor, 0), line.currency),
+            line.occurred_on, line.account.name, what, line.note,
+            money(max(amount, 0), line.currency), money(max(-amount, 0), line.currency),
         ])
     one = currencies[0] if len(currencies) == 1 else ''
     return Table(
@@ -139,15 +137,22 @@ def _transfers(words, inside):
     )
 
 
-def _net_totals(inside, currencies):
+def _net_totals(inside, currencies, narrow, alive):
     """Income and spending per currency over the lines a narrowed report keeps."""
-    rows = inside.order_by().values('currency').annotate(
+    # Under a choice of categories a split counts for its chosen parts only
+    whole = allocations.unsplit_only(inside) if narrow.by_category else inside
+    rows = whole.order_by().values('currency').annotate(
         income=Sum('amount_minor', filter=Q(kind='income')),
         expense=Sum('amount_minor', filter=Q(kind='expense')),
     )
     found = {row['currency']: row for row in rows}
+    parts = split_sums(inside, narrow, alive) if narrow.by_category else {}
     return [
-        net(currency, found.get(currency, {}).get('income') or 0, -(found.get(currency, {}).get('expense') or 0))
+        net(
+            currency,
+            (found.get(currency, {}).get('income') or 0) + parts.get((currency, 'income'), 0),
+            -((found.get(currency, {}).get('expense') or 0) + parts.get((currency, 'expense'), 0)),
+        )
         for currency in currencies
     ]
 
@@ -157,8 +162,9 @@ def build(workspace, context):
     accounts = list(Account.objects.filter(workspace=workspace).order_by('is_archived', 'created_at'))
     transactions = Transaction.objects.filter(workspace=workspace, account__in=accounts)
     inside = narrowing.lines(
-        transactions.filter(occurred_on__range=(period.date_from, period.date_to)), narrow, 'kind', PLAIN,
+        transactions.filter(occurred_on__range=(period.date_from, period.date_to)), narrow, 'kind', PLAIN, splits=True,
     )
+    alive = allocations.categories_of(workspace.id)
 
     grouped = by_currency(accounts, lambda account: account.currency)
     currencies = list(grouped) or [workspace.default_currency]
@@ -166,7 +172,7 @@ def build(workspace, context):
 
     totals, account_tables = [], []
     if narrow.active:
-        totals = _net_totals(inside, currencies)
+        totals = _net_totals(inside, currencies, narrow, alive)
     else:
         figures = _figures(transactions, period)
         for currency in currencies:
@@ -198,9 +204,9 @@ def build(workspace, context):
         ],
         tables=[
             *account_tables,
-            *(_category_tables(words, inside, 'expense', currencies) if narrow.shows('expense') else []),
-            *(_category_tables(words, inside, 'income', currencies) if narrow.shows('income') else []),
-            *([_income_and_spending(words, inside, currencies)] if plain else []),
+            *(_category_tables(words, inside, 'expense', currencies, narrow, alive) if narrow.shows('expense') else []),
+            *(_category_tables(words, inside, 'income', currencies, narrow, alive) if narrow.shows('income') else []),
+            *([_income_and_spending(words, inside, currencies, narrow, alive)] if plain else []),
             # A transfer has no category: choosing categories leaves transfers out
             *([_transfers(words, inside)] if narrow.shows('transfer') and not narrow.by_category else []),
         ],

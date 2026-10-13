@@ -9,11 +9,12 @@ Django 5.2 + Django REST Framework on PostgreSQL. One deployable plus a backgrou
 | `identity` | User model, profile endpoint. Authentication itself is django-allauth (headless). |
 | `workspaces` | The tenant: `Workspace`, `Membership`, roles, row-level-security helpers. |
 | `cashbook` | Cashbooks, entries, categories, payment methods, reports. |
-| `ledger_personal` | Personal mode: accounts, categories, transactions (incl. transfers), budgets. |
+| `ledger_personal` | Personal mode: accounts, categories, transactions (incl. transfers and splits), budgets. |
+| `reminders` | Recurring transactions and reminders: rules the app writes, the dates they fall due on, and what the user is told. A job every 15 minutes (`reminders/tasks.py`) does the work, so the worker must be running. |
 | `sync` | Offline sync for the app: change log pull and idempotent mutation push. |
 | `reports` | Reports to download as PDF or Excel: personal, one account, one cashbook, a whole business. |
 | `billing` | Plans, limits, subscriptions, promo codes and campaigns, run from the admin. See [docs/billing.md](docs/billing.md). |
-| `notifications` | Email accounts, email queue backend and task. |
+| `notifications` | Email accounts, email queue backend and task. Push: the phones a user is signed in on (`Device`), what they want to be told (`NotificationPreference`), and the sender (`push.py`, Firebase Cloud Messaging). After every reminders run, what the inbox holds is handed to the phones (`delivery.py`). |
 | `audit` | Request logging, `CRUDLog`. |
 
 ## Run locally
@@ -28,6 +29,11 @@ python manage.py procrastinate worker               # background jobs, separate 
 ```
 
 Or with Docker: `docker compose up --build`.
+
+Push notifications need a Firebase service-account key: Firebase console > Project settings > Service accounts >
+Generate new private key. Keep the file out of the repository (`secrets/` is ignored) and point
+`FCM_CREDENTIALS_FILE` at it in `.env`. Without it nothing is pushed and everything else works; the app's
+Settings > Notifications > "Send a test notification" says which of the two it is.
 
 Tests: `python manage.py test`.
 
@@ -55,6 +61,10 @@ Tests: `python manage.py test`.
 - `POST /api/v1/me/username/` changes the username; needs `password` unless the account has none.
 - `/api/v1/me/avatar/` `POST` (multipart `file`) sets the picture, `DELETE` removes it, `GET` serves it.
   The app crops it; the server checks it is a JPEG, PNG or WEBP of 5 MB or less and stores a 512px JPEG without metadata.
+- `PUT /api/v1/me/devices/` `{token, platform, locale, timezone, app_version}` registers the phone for push (and sets the
+  user's time zone); `POST /api/v1/me/devices/forget/` `{token}` takes it back before signing out.
+- `GET`/`PATCH /api/v1/me/notification-settings/` which pushes the user wants, the hour reminders come at, quiet hours.
+  `POST /api/v1/me/notification-settings/test/` sends one to the user's own phones and says how many it reached.
 - `POST /api/v1/workspaces/` creates a business; an optional client `id` makes retries return the same workspace.
 - `GET /api/v1/reports/personal/`, `reports/accounts/<id>/`, `reports/cashbooks/<id>/`, `reports/businesses/<id>/`
   `?file_type=pdf|xlsx&period=this_month|last_month|last_3_months|this_year|custom&from&to&lang=en|bn` a report as a file.

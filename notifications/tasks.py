@@ -3,7 +3,9 @@ from django.conf import settings
 from django.core.mail import EmailMultiAlternatives, get_connection
 from procrastinate.contrib.django import app
 
+from . import delivery
 from .email_handler import EmailHandler
+from .push import PushError
 
 
 class EmailDeliveryError(Exception):
@@ -35,3 +37,9 @@ def deliver_email(subject, body, to, from_email=None, html_body=None, purpose='d
 @app.task(queue='email', retry=procrastinate.RetryStrategy(max_attempts=5, exponential_wait=10))
 def send_email(subject, body, to, from_email=None, html_body=None, purpose='default'):
     deliver_email(subject, body, to, from_email=from_email, html_body=html_body, purpose=purpose)
+
+
+# Tried again only when Firebase could not be reached: a phone that is gone is forgotten, not retried
+@app.task(queue='push', retry=procrastinate.RetryStrategy(max_attempts=5, exponential_wait=10, retry_exceptions=[PushError]))
+def send_push(item_id):
+    delivery.send_item(item_id)

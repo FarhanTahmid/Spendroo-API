@@ -1,6 +1,8 @@
 import uuid
+from unittest import mock
 
 from django.contrib.auth import get_user_model
+from django.core.exceptions import ValidationError
 from django.test import TestCase
 from rest_framework.test import APIClient
 
@@ -10,6 +12,7 @@ from ledger_personal.models import Account, Budget, Category, Transaction
 from workspaces.models import Membership
 from workspaces.services import DEMO_ENTRIES, create_workspace, get_personal_workspace
 from workspaces.tests import UnprivilegedRoleMixin
+from .registry import TABLES
 
 User = get_user_model()
 
@@ -189,6 +192,67 @@ class PushTests(SyncTestCase):
         self.assertEqual(sum(t.amount_minor for t in Transaction.objects.filter(transfer_group_id=group)), 0)
 
 
+class SplitSyncTests(SyncTestCase):
+    def setUp(self):
+        super().setUp()
+        self.account = Account.objects.get(workspace=self.personal)
+        food, transport = Category.objects.filter(workspace=self.personal, name__in=['Food', 'Transport']).order_by('name')
+        self.parts = [
+            {'category_id': str(food.id), 'amount_minor': 300, 'note': 'Lunch'},
+            {'category_id': str(transport.id), 'amount_minor': 150},
+            {'category_id': None, 'amount_minor': 50},
+        ]
+        self.food = food
+
+    def expense(self, **data):
+        return self.upsert('transactions', account_id=str(self.account.id), kind='expense', occurred_on='2026-10-01',
+                           **data)
+
+    def test_a_split_travels_with_its_amount(self):
+        created = self.expense(amount_minor=-500, splits=self.parts)
+        result = self.push(self.alice_client, self.personal, created)[0]
+        self.assertEqual(result['status'], 'applied', result)
+        self.assertEqual(
+            result['row']['splits'],
+            [{**self.parts[0]}, {**self.parts[1], 'note': ''}, {**self.parts[2], 'note': ''}],
+        )
+        self.assertIsNone(result['row']['category_id'])
+        pulled = self.pull(self.alice_client, self.personal)['changes']['transactions']
+        self.assertEqual(pulled[-1]['splits'], result['row']['splits'])
+
+        # The amount and its parts change together, in one mutation
+        smaller = [self.parts[0], {**self.parts[1], 'amount_minor': 100}]
+        results = self.push(
+            self.alice_client, self.personal,
+            self.upsert('transactions', created['row_id'], amount_minor=-400, splits=smaller),
+            # An app from before splits changes the amount alone
+            self.upsert('transactions', created['row_id'], amount_minor=-900),
+            self.upsert('transactions', created['row_id'], note='Bazar'),
+            # Back to one category
+            self.upsert('transactions', created['row_id'], splits=[], category_id=str(self.food.id)),
+        )
+        self.assertEqual([r['status'] for r in results], ['applied', 'rejected', 'applied', 'applied'])
+        self.assertEqual(results[1]['error']['code'], 'invalid')
+        saved = Transaction.objects.get(id=created['row_id'])
+        self.assertEqual((saved.amount_minor, saved.splits, saved.category, saved.note), (-400, [], self.food, 'Bazar'))
+
+    def test_a_part_must_name_a_category_of_this_workspace(self):
+        book = self.push_book_with_entry()[0]
+        elsewhere = EntryCategory.objects.create(cashbook_id=book['row_id'], category_name='Sales')
+        other = Category.objects.filter(workspace=get_personal_workspace(self.bob)).first()
+        for stranger in (elsewhere, other):
+            parts = [{'category_id': str(stranger.id), 'amount_minor': 250}, {'category_id': None, 'amount_minor': 250}]
+            result = self.push(self.alice_client, self.personal, self.expense(amount_minor=-500, splits=parts))[0]
+            self.assertEqual((result['status'], result['error']['code']), ('rejected', 'invalid'))
+
+    def test_a_category_deleted_since_does_not_block_other_edits(self):
+        created = self.expense(amount_minor=-500, splits=self.parts)
+        self.push(self.alice_client, self.personal, created)
+        self.food.soft_delete()
+        result = self.push(self.alice_client, self.personal, self.upsert('transactions', created['row_id'], note='x'))[0]
+        self.assertEqual(result['status'], 'applied')
+
+
 class BudgetSyncTests(SyncTestCase):
     def setUp(self):
         super().setUp()
@@ -295,6 +359,38 @@ class PushPermissionTests(SyncTestCase):
         self.assertTrue(all(r['row'] is None for r in results))
         saved = Entry.objects.get(id=entry['row_id'])
         self.assertEqual((saved.amount_minor, saved.deleted_at), (5000, None))
+
+    def test_rows_only_the_server_makes(self):
+        account = Account.objects.get(workspace=self.personal)
+        table = TABLES['accounts']
+        with mock.patch.object(table, 'client_creates', False), mock.patch.object(table, 'client_deletes', False):
+            results = self.push(
+                self.alice_client, self.personal,
+                self.upsert('accounts', name='Savings', kind='savings', currency='BDT'),
+                self.delete('accounts', str(account.id)),
+                # Its writable columns stay open
+                self.upsert('accounts', str(account.id), name='Wallet'),
+            )
+        self.assertEqual([r['status'] for r in results], ['rejected', 'rejected', 'applied'])
+        self.assertEqual([r['error']['code'] for r in results[:2]], ['forbidden', 'forbidden'])
+        account.refresh_from_db()
+        self.assertEqual((account.name, account.deleted_at), ('Wallet', None))
+
+    def test_a_table_can_refuse_a_write_by_what_changed(self):
+        account = Account.objects.get(workspace=self.personal)
+
+        def on_write(workspace, user, obj, creating, before):
+            if not creating and before.get('name') == account.name:
+                raise ValidationError('The name is settled.')
+
+        with mock.patch.object(TABLES['accounts'], 'on_write', on_write):
+            results = self.push(
+                self.alice_client, self.personal,
+                self.upsert('accounts', str(account.id), name='Wallet'),
+                self.upsert('accounts', str(account.id), is_archived=True),
+            )
+        self.assertEqual([r['status'] for r in results], ['rejected', 'applied'])
+        self.assertEqual(results[0]['error']['code'], 'invalid')
 
     def test_category_from_another_book_is_rejected(self):
         book, entry, _ = self.push_book_with_entry()

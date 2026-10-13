@@ -12,6 +12,8 @@ from dataclasses import dataclass, replace
 from django.db.models import Q
 from rest_framework.exceptions import ParseError
 
+from ledger_personal import allocations
+
 LEDGER_TYPES = ('income', 'expense', 'transfer')
 CASHBOOK_TYPES = ('cash_in', 'cash_out')
 UNCATEGORISED = 'none'
@@ -81,14 +83,17 @@ def named(narrow, categories, name_field):
     return replace(narrow, category_names=tuple(dict.fromkeys(found[category_id] for category_id in narrow.category_ids)))
 
 
-def lines(queryset, narrow, type_field, plain_types=None):
+def lines(queryset, narrow, type_field, plain_types=None, splits=False):
     """
     The rows of `queryset` the choice keeps. `plain_types` are the kinds that
-    can have a category at all: "uncategorised" means those with none.
+    can have a category at all: "uncategorised" means those with none. With
+    `splits` the rows are personal transactions, kept when any of their parts is.
     """
     if narrow.types:
         queryset = queryset.filter(**{f'{type_field}__in': narrow.types})
-    if narrow.by_category:
+    if narrow.by_category and splits:
+        queryset = queryset.filter(allocations.condition(narrow.category_ids, narrow.uncategorised, type_field))
+    elif narrow.by_category:
         either = Q()
         if narrow.category_ids:
             either |= Q(category_id__in=narrow.category_ids)

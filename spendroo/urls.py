@@ -24,6 +24,7 @@ def health(request):
 
 api_v1_patterns = [
     path('',include('identity.urls')),
+    path('',include('notifications.urls')),
     path('workspaces/',include('workspaces.urls')),
     path('',include('cashbook.urls')),
     path('ledger/',include('ledger_personal.urls')),
