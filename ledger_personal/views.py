@@ -10,6 +10,7 @@ from billing.catalog.keys import F
 from workspaces.models import Membership
 from workspaces.tenancy import TenantScopedMixin
 from reminders.inbox import today_in
+from reports.periods import is_preset
 from . import goals, pagination, queries
 from .models import Account, SavingsGoal
 from .serializers import (
@@ -19,7 +20,11 @@ from .serializers import (
 INCLUDES = ('categories', 'series')
 
 FILTER_PARAMETERS = [
-    OpenApiParameter('from', OpenApiTypes.DATE, description='First day, inclusive.'),
+    OpenApiParameter(
+        'from', OpenApiTypes.DATE,
+        description='First day, inclusive. Dates other than a preset (a whole month, the last three months, '
+                    'this year) are a plan feature: 402 `insights.custom_range` without it.',
+    ),
     OpenApiParameter('to', OpenApiTypes.DATE, description='Last day, inclusive.'),
     OpenApiParameter('kind', OpenApiTypes.STR, enum=list(queries.KINDS)),
     OpenApiParameter(
@@ -47,6 +52,13 @@ class AccountView(TenantScopedMixin, APIView):
             raise NotFound('Account not found.')
         return account
 
+    def get_filters(self, request, account):
+        """The filter asked for. Chosen dates need the plan; the presets do not."""
+        filters = queries.parse_filters(request.query_params)
+        if not is_preset(filters.date_from, filters.date_to, today_in(account.workspace)):
+            gates.require(account.workspace, F.INSIGHTS_CUSTOM_RANGE)
+        return filters
+
 
 class AccountTransactionsView(AccountView):
     """
@@ -69,7 +81,7 @@ class AccountTransactionsView(AccountView):
     )
     def get(self, request, account_id):
         account = self.get_account(request, account_id)
-        filters = queries.parse_filters(request.query_params)
+        filters = self.get_filters(request, account)
         rows, next_cursor = pagination.page(
             queries.filtered(account, filters),
             request.query_params.get('cursor'),
@@ -102,7 +114,7 @@ class AccountSummaryView(AccountView):
     )
     def get(self, request, account_id):
         account = self.get_account(request, account_id)
-        filters = queries.parse_filters(request.query_params)
+        filters = self.get_filters(request, account)
         include = {part.strip() for part in request.query_params.get('include', '').split(',') if part.strip()}
         if include - set(INCLUDES):
             raise ParseError(f"include takes: {', '.join(INCLUDES)}.")

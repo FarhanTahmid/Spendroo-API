@@ -8,6 +8,8 @@ from billing.testing import grant_plan
 from billing.tests.base import BillingTestCase
 from workspaces.models import Membership
 from workspaces.tests import UnprivilegedRoleMixin
+from reminders.inbox import today_in
+from reports.periods import LAST_3_MONTHS, THIS_YEAR, resolve
 from .models import Account, Category, Transaction
 
 
@@ -351,6 +353,46 @@ class LockedAccountTests(AccountTestCase):
         self.assertEqual((summary.status_code, summary.data['is_locked'], summary.data['balance_minor']), (200, True, -500))
         self.assertEqual(len(self.alice_client.get(f'{url}transactions/').data['results']), 1)
         self.assertFalse(self.summary()['is_locked'])
+
+
+class CustomRangeTests(AccountTestCase):
+    """On Free, chosen dates are refused and the presets the app offers are not."""
+    plan = None
+
+    def get(self, path, **params):
+        return self.alice_client.get(f'{self.url}{path}', params)
+
+    def test_presets_are_free(self):
+        today = today_in(self.personal)
+        presets = [{}, {'from': '2025-02-01', 'to': '2025-02-28'}, {'from': '2026-09-01', 'to': '2026-09-30'}]
+        for name in (LAST_3_MONTHS, THIS_YEAR):
+            period = resolve({'period': name}, today)
+            presets.append({'from': period.date_from.isoformat(), 'to': period.date_to.isoformat()})
+        for path in ('summary/', 'transactions/'):
+            for params in presets:
+                self.assertEqual(self.get(path, **params).status_code, 200, (path, params))
+
+    def test_chosen_dates_are_a_plan_feature(self):
+        chosen = [
+            {'from': '2026-09-10', 'to': '2026-10-02'},
+            {'from': '2026-09-01', 'to': '2026-10-31'},
+            {'from': '2026-09-01'},
+            {'to': '2026-09-30'},
+        ]
+        for path in ('summary/', 'transactions/'):
+            for params in chosen:
+                response = self.get(path, **params)
+                self.assertEqual(
+                    (response.status_code, response.data['feature']), (402, 'insights.custom_range'), (path, params),
+                )
+        grant_plan(self.alice, 'plus')
+        for path in ('summary/', 'transactions/'):
+            self.assertEqual(self.get(path, **chosen[0]).status_code, 200, path)
+
+    def test_a_stranger_learns_nothing_about_the_plan(self):
+        other = Account.objects.create(workspace=self.personal, name='Other')
+        response = self.bob_client.get(f'/api/v1/ledger/accounts/{other.id}/summary/', {'from': '2026-09-10', 'to': '2026-10-02'})
+        self.assertEqual(response.status_code, 404)
 
 
 class SchemaTests(BillingTestCase):

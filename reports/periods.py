@@ -64,3 +64,24 @@ def resolve(params, today):
             raise ParseError('from must not be after to.')
         return Period(name, date_from, date_to)
     raise ParseError(f"period must be one of: {', '.join(ALL)}.")
+
+
+def is_preset(date_from, date_to, today):
+    """
+    Whether the days asked for are ones the app offers without a chosen range:
+    all of time, any one whole month (the month switcher steps through them),
+    or the last three months or this year. The phone's today may be a day off
+    the server's, so either side of `today` counts too.
+    """
+    if date_from is None and date_to is None:
+        return True
+    if date_from is None or date_to is None:
+        return False
+    if date_from == _month_start(date_from) and date_to == _month_end(date_from):
+        return True
+    for day in (today - timedelta(days=1), today, today + timedelta(days=1)):
+        for name in (LAST_3_MONTHS, THIS_YEAR):
+            period = resolve({'period': name}, day)
+            if (date_from, date_to) == (period.date_from, period.date_to):
+                return True
+    return False
