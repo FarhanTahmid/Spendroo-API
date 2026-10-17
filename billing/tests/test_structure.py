@@ -29,12 +29,15 @@ ENFORCED_BY_THE_SERVER = {
     F.RECURRING_TRANSACTIONS, F.REMINDERS_STANDALONE, F.SAVINGS_GOALS,
     F.BUSINESS_WORKSPACES, F.BUSINESS_CASHBOOKS, F.TEAM_SEATS,
     F.REPORTS_EXCEL, F.REPORTS_CUSTOM_RANGE, F.ENTRY_CUSTOM_FIELDS, F.STORAGE_ATTACHMENTS_MB,
+    F.INSIGHTS_TREND_MONTHS,
 }
+# Limits on a size (megabytes, months), checked where it is asked for rather than by counting rows
+NOT_ROW_COUNTS = {F.STORAGE_ATTACHMENTS_MB, F.INSIGHTS_TREND_MONTHS}
 # Metered by gates.take / gates.consume; the features that spend them come later
 METERED_FOR_LATER = {F.AI_CREDITS, F.STATEMENT_PDF_PAGES}
 # Shown or hidden by the app from data it already holds; nothing reaches the server
 DECIDED_IN_THE_APP = {
-    F.ADS, F.INSIGHTS_CUSTOM_RANGE, F.INSIGHTS_YEAR_REVIEW, F.INSIGHTS_TREND_MONTHS,
+    F.ADS, F.INSIGHTS_CUSTOM_RANGE, F.INSIGHTS_YEAR_REVIEW,
     F.HOME_WIDGET, F.AUDIT_TRAIL,
 }
 # Defined and shown, deliberately not enforced yet
@@ -70,7 +73,7 @@ class EveryFeatureIsAccountedForTests(SimpleTestCase):
     def test_every_counted_limit_has_a_rule_and_every_rule_a_limit(self):
         counted = {
             feature.key for feature in ENFORCED_BY_THE_SERVER
-            if feature.kind == LIMIT and feature != F.STORAGE_ATTACHMENTS_MB
+            if feature.kind == LIMIT and feature not in NOT_ROW_COUNTS
         }
         self.assertEqual(set(RULES), counted)
 

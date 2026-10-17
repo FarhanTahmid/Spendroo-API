@@ -3,6 +3,7 @@ The questions features ask before doing something a plan may not include.
 
     gates.require(workspace, F.REPORTS_EXCEL)                 a flag
     gates.check_limit(workspace, F.BUSINESS_CASHBOOKS)        room for one more
+    gates.check_within(workspace, F.INSIGHTS_TREND_MONTHS, 12) a size asked for, not a count of rows
     with gates.consume(user, F.AI_CREDITS, 3, key=...): ...   a quota, given back if the block fails
     gates.assert_row_writable(workspace, F.PERSONAL_ACCOUNTS, account_id)
 
@@ -135,6 +136,25 @@ def require(subject, feature):
     entitlements = entitlements_for(subject)
     if not entitlements.can(feature):
         _refuse(entitlements, subject, feature, REASON_FEATURE)
+
+
+def limit_in_force(subject, feature):
+    """
+    The limit a feature is held to right now: None when the plan sets none, or
+    when refusals are not being enforced (the app then limits nothing either).
+    """
+    entitlements = entitlements_for(subject)
+    if entitlements.settings.enforcement_mode != BillingSettings.MODE_ENFORCE:
+        return None
+    return entitlements.limit_of(feature)
+
+
+def check_within(subject, feature, amount):
+    """Refuse asking for `amount` of a limit that is a size (months, say), not a count of rows."""
+    entitlements = entitlements_for(subject)
+    limit = entitlements.limit_of(feature)
+    if limit is not None and amount > limit:
+        _refuse(entitlements, subject, feature, REASON_LIMIT, limit=limit, current=amount)
 
 
 def _lock_for_count(model, pk):

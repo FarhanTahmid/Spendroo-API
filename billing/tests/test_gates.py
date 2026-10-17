@@ -369,3 +369,33 @@ class AttachmentStorageTests(BillingTestCase):
         self.assertEqual(self.alice_client.post(
             f'{self.entries}{entry_id}/add-bill/', {'bill_file': self.bill(megabyte - 10)}, format='multipart',
         ).status_code, 201)
+
+
+class SizeLimitTests(BillingTestCase):
+    """A limit on how much is asked for at once (months of a trend), not on a count of rows."""
+
+    def test_within_the_limit_passes_and_past_it_is_refused(self):
+        from billing import gates
+        gates.check_within(self.personal, F.INSIGHTS_TREND_MONTHS, 6)
+        with self.assertRaises(gates.PlanLimit) as refused:
+            gates.check_within(self.personal, F.INSIGHTS_TREND_MONTHS, 7)
+        self.assertEqual(
+            {key: refused.exception.meta[key] for key in ('feature', 'reason', 'limit', 'current')},
+            {'feature': 'insights.trend_months', 'reason': 'limit', 'limit': 6, 'current': 7},
+        )
+        grant_plan(self.alice, 'plus')
+        gates.check_within(self.personal, F.INSIGHTS_TREND_MONTHS, 24)
+
+    def test_unlimited_passes_anything(self):
+        from billing import gates
+        set_limit(self.alice, F.INSIGHTS_TREND_MONTHS, None)
+        gates.check_within(self.alice, F.INSIGHTS_TREND_MONTHS, 10_000)
+        self.assertIsNone(gates.limit_in_force(self.alice, F.INSIGHTS_TREND_MONTHS))
+
+    def test_the_limit_in_force_follows_the_enforcement_mode(self):
+        from billing import gates
+        self.assertEqual(gates.limit_in_force(self.personal, F.INSIGHTS_TREND_MONTHS), 6)
+        for mode in (BillingSettings.MODE_LOG_ONLY, BillingSettings.MODE_OFF):
+            set_mode(mode)
+            self.assertIsNone(gates.limit_in_force(self.personal, F.INSIGHTS_TREND_MONTHS), mode)
+            gates.check_within(self.personal, F.INSIGHTS_TREND_MONTHS, 24)

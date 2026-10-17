@@ -7,14 +7,15 @@ from rest_framework.views import APIView
 
 from billing import gates
 from billing.catalog.keys import F
-from workspaces.models import Membership
+from workspaces.models import Membership, Workspace
 from workspaces.tenancy import TenantScopedMixin
 from reminders.inbox import today_in
 from reports.periods import is_preset
-from . import goals, pagination, queries
+from . import goals, pagination, queries, trends
 from .models import Account, SavingsGoal
 from .serializers import (
     AccountSummarySerializer, AccountTransactionPageSerializer, AccountTransactionSerializer, GoalSummarySerializer,
+    TrendsSerializer,
 )
 
 INCLUDES = ('categories', 'series')
@@ -133,8 +134,52 @@ class AccountSummaryView(AccountView):
             data['expense_categories'] = queries.by_category(account, filters, 'expense')
             data['income_categories'] = queries.by_category(account, filters, 'income')
         if 'series' in include:
-            data['series'] = queries.series(account, filters)
+            # All time is free, so a long series is shortened to the plan rather than refused
+            data['series'] = queries.series(
+                account, filters, gates.limit_in_force(account.workspace, F.INSIGHTS_TREND_MONTHS),
+            )
         return Response(AccountSummarySerializer(data).data)
+
+
+class WorkspaceTrendsView(TenantScopedMixin, APIView):
+    """
+    GET ?months&to&currency
+
+    Income and expense for each of the `months` months ending with `to`, as the
+    app's cash-flow chart draws them. More months than the plan's
+    insights.trend_months is a 402.
+    """
+    permission_classes = [IsAuthenticated]
+
+    @extend_schema(
+        parameters=[
+            OpenApiParameter(
+                'months', OpenApiTypes.INT,
+                description=f'{trends.DEFAULT_MONTHS} by default, at most {trends.MAX_MONTHS}. More than the plan '
+                            'allows: 402 `insights.trend_months`, reason `limit`.',
+            ),
+            OpenApiParameter('to', OpenApiTypes.STR, description='The last month, YYYY-MM. This month by default.'),
+            OpenApiParameter(
+                'currency', OpenApiTypes.STR, description="Three-letter code. The workspace's own by default.",
+            ),
+        ],
+        responses=TrendsSerializer,
+    )
+    def get(self, request, workspace_id):
+        workspace = Workspace.objects.filter(id=workspace_id).first()
+        # Who may look comes before what the plan allows, so a stranger learns nothing of it
+        if workspace is None or workspace.role_of(request.user) not in Membership.MANAGER_ROLES:
+            raise NotFound('Workspace not found.')
+        asked = trends.parse_trend_params(request.query_params, today_in(workspace), workspace.default_currency)
+        gates.check_within(workspace, F.INSIGHTS_TREND_MONTHS, asked.months)
+        first, last = asked.window
+        return Response(TrendsSerializer({
+            'currency': asked.currency,
+            'months': asked.months,
+            'date_from': first,
+            'date_to': last,
+            'points': trends.monthly_totals(workspace, asked.currency, first, last),
+        }).data)
 
 
 class GoalSummaryView(TenantScopedMixin, APIView):

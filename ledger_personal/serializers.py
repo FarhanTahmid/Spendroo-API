@@ -50,6 +50,24 @@ class SeriesSerializer(serializers.Serializer):
     monthly = serializers.BooleanField()
     opening_minor = serializers.IntegerField(help_text='The balance before the first point.')
     points = SeriesPointSerializer(many=True)
+    hidden_months = serializers.IntegerField(
+        help_text='Months of history before the first point that the plan does not chart (insights.trend_months).',
+    )
+
+
+class TrendPointSerializer(serializers.Serializer):
+    month = serializers.DateField(help_text='The first day of the month.')
+    income_minor = serializers.IntegerField()
+    expense_minor = serializers.IntegerField()
+
+
+class TrendsSerializer(serializers.Serializer):
+    """Amounts are positive, in minor units of `currency`. Transfers are neither income nor expense."""
+    currency = serializers.CharField()
+    months = serializers.IntegerField()
+    date_from = serializers.DateField(help_text='First day of the first month.')
+    date_to = serializers.DateField(help_text='Last day of the last month.')
+    points = TrendPointSerializer(many=True, help_text='One per month, oldest first, empty months included.')
 
 
 class AccountSummarySerializer(serializers.Serializer):

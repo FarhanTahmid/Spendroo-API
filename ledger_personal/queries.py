@@ -17,7 +17,7 @@ from django.db.models.functions import Abs, Cast
 from rest_framework.exceptions import ParseError
 
 from spendroo.money import currency_exponent
-from . import allocations
+from . import allocations, trends
 from .models import Transaction
 
 KINDS = tuple(kind for kind, _ in Transaction.KIND_CHOICES)
@@ -251,11 +251,14 @@ def by_category(account, filters, kind):
     ]
 
 
-def series(account, filters):
+def series(account, filters, max_months=None):
     """
     Cash in, cash out and the closing balance, step by step through the period:
     by day, or by month once the span is long. In and out follow the whole
     filter; the balance counts every transaction, as a balance must.
+
+    A month-by-month series keeps only the `max_months` months up to its latest
+    (the plan's insights.trend_months); `hidden_months` says how many went.
     """
     narrow = _narrow(account, filters)
     everything = _with_units(account_transactions(account), account).filter(_period(filters))
@@ -280,7 +283,7 @@ def series(account, filters):
     if filters.date_from:
         opening += _total(Transaction.objects.filter(account=account), Q(occurred_on__lt=filters.date_from))
     if not days:
-        return {'monthly': False, 'opening_minor': opening, 'points': []}
+        return {'monthly': False, 'opening_minor': opening, 'points': [], 'hidden_months': 0}
     first = filters.date_from or days[0]['occurred_on']
     last = filters.date_to or days[-1]['occurred_on']
     monthly = (last - first).days > SERIES_DAILY_LIMIT
@@ -296,4 +299,11 @@ def series(account, filters):
             points[-1]['balance_minor'] = balance
         else:
             points.append({'date': step, 'in_minor': cash_in, 'out_minor': cash_out, 'balance_minor': balance})
-    return {'monthly': monthly, 'opening_minor': opening, 'points': points}
+    hidden = 0
+    if monthly:
+        kept, hidden = trends.trim_months(points, points[-1]['date'], max_months)
+        if hidden:
+            # The balance the first month kept starts from
+            opening = points[len(points) - len(kept) - 1]['balance_minor']
+            points = kept
+    return {'monthly': monthly, 'opening_minor': opening, 'points': points, 'hidden_months': hidden}

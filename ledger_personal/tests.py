@@ -1,15 +1,19 @@
+from datetime import date
 import uuid
 
 from django.core.exceptions import ValidationError
 from django.utils import timezone
 from rest_framework.test import APIClient
 
-from billing.testing import grant_plan
+from billing.catalog.keys import F
+from billing.models import BillingSettings, FunnelEvent
+from billing.testing import grant_plan, set_limit, set_mode
 from billing.tests.base import BillingTestCase
 from workspaces.models import Membership
 from workspaces.tests import UnprivilegedRoleMixin
 from reminders.inbox import today_in
 from reports.periods import LAST_3_MONTHS, THIS_YEAR, resolve
+from . import trends
 from .models import Account, Category, Transaction
 
 
@@ -395,8 +399,165 @@ class CustomRangeTests(AccountTestCase):
         self.assertEqual(response.status_code, 404)
 
 
+class TrendsTests(UnprivilegedRoleMixin, AccountTestCase):
+    """
+    The workspace's cash-flow trend. seed() gives the figures the app's own
+    tests use (test/repository_test.dart), so both sides expect the same.
+    """
+    plan = None
+
+    def setUp(self):
+        super().setUp()
+        self.trends_url = f'/api/v1/ledger/workspaces/{self.personal.id}/trends/'
+
+    def get(self, client=None, **params):
+        return (client or self.alice_client).get(self.trends_url, params)
+
+    def trend(self, **params):
+        response = self.get(**params)
+        self.assertEqual(response.status_code, 200, response.data)
+        return response.data
+
+    def test_each_month_is_income_beside_expense_oldest_first_with_empty_months_kept(self):
+        self.seed()
+        data = self.trend(months=3, to='2026-10')
+        self.assertEqual(
+            (data['currency'], data['months'], data['date_from'], data['date_to']),
+            ('BDT', 3, '2026-08-01', '2026-10-31'),
+        )
+        # Transfers are the user's own money moving, neither income nor expense
+        self.assertEqual(
+            [(p['month'], p['income_minor'], p['expense_minor']) for p in data['points']],
+            [('2026-08-01', 0, 0), ('2026-09-01', 5000000, 120000), ('2026-10-01', 0, 75000)],
+        )
+
+    def test_every_account_counts_in_its_currency_and_deleted_rows_do_not(self):
+        self.seed()
+        self.add('income', 7000, '2026-10-20', account=self.bank)
+        dollars = Account.objects.create(workspace=self.personal, name='Payoneer', kind='bank', currency='USD')
+        self.add('income', 900, '2026-10-21', account=dollars)
+        self.add('expense', 333, '2026-10-22').soft_delete()
+
+        october = self.trend(months=1, to='2026-10')['points']
+        self.assertEqual([(p['income_minor'], p['expense_minor']) for p in october], [(7000, 75000)])
+        usd = self.trend(months=1, to='2026-10', currency='usd')
+        self.assertEqual((usd['currency'], usd['points'][0]['income_minor']), ('USD', 900))
+
+    def test_the_defaults_are_six_months_to_this_month_in_the_workspace_currency(self):
+        data = self.trend()
+        this_month = today_in(self.personal).replace(day=1)
+        self.assertEqual((data['months'], data['currency'], len(data['points'])), (6, 'BDT', 6))
+        self.assertEqual(data['points'][-1]['month'], this_month.isoformat())
+
+    def test_bad_parameters_are_refused(self):
+        for params in ({'months': 'six'}, {'months': 0}, {'months': trends.MAX_MONTHS + 1},
+                       {'to': '2026-13'}, {'to': '2026-10-01'}, {'currency': 'TAKA'}):
+            self.assertEqual(self.get(**params).status_code, 400, params)
+
+    def test_more_months_than_the_plan_allows_is_refused_with_the_limit(self):
+        self.assertEqual(self.get(months=6).status_code, 200)
+        response = self.get(months=12)
+        self.assertEqual(response.status_code, 402)
+        self.assertEqual(
+            {key: response.data[key] for key in ('code', 'feature', 'reason', 'limit', 'current', 'plan', 'upgrade_to')},
+            {'code': 'plan_limit', 'feature': 'insights.trend_months', 'reason': 'limit', 'limit': 6,
+             'current': 12, 'plan': 'free', 'upgrade_to': 'plus'},
+        )
+
+        grant_plan(self.alice, 'plus')
+        self.assertEqual(len(self.trend(months=24)['points']), 24)
+        self.assertEqual(self.get(months=25).status_code, 402)
+
+    def test_an_override_moves_the_limit(self):
+        set_limit(self.alice, F.INSIGHTS_TREND_MONTHS, 12)
+        self.assertEqual(self.get(months=12).status_code, 200)
+        set_limit(self.alice, F.INSIGHTS_TREND_MONTHS, None)
+        self.assertEqual(self.get(months=trends.MAX_MONTHS).status_code, 200)
+
+    def test_log_only_lets_it_through_and_notes_the_hit(self):
+        set_mode(BillingSettings.MODE_LOG_ONLY)
+        self.assertEqual(self.get(months=24).status_code, 200)
+        hit = FunnelEvent.objects.get(kind=FunnelEvent.KIND_LIMIT_HIT)
+        self.assertEqual((hit.feature_key, hit.enforced), ('insights.trend_months', False))
+
+    def test_a_stranger_learns_nothing_not_even_the_plan(self):
+        for params in ({}, {'months': 24}):
+            response = self.get(client=self.bob_client, **params)
+            self.assertEqual((response.status_code, response.data), (404, {'detail': 'Workspace not found.'}))
+        self.assertEqual(self.alice_client.get(f'/api/v1/ledger/workspaces/{uuid.uuid4()}/trends/').status_code, 404)
+        Membership.objects.create(workspace=self.personal, user=self.bob, role=Membership.ROLE_VIEWER)
+        self.assertEqual(self.get(client=self.bob_client).status_code, 404)
+        self.assertIn(APIClient().get(self.trends_url).status_code, (401, 403))
+
+    def test_row_level_security_lets_the_owner_read(self):
+        self.seed()
+        self.use_unprivileged_role()
+        self.assertEqual(self.trend(months=2, to='2026-10')['points'][0]['income_minor'], 5000000)
+
+
+class TrendMathTests(AccountTestCase):
+    """What Year in review builds on: any span, across the turn of a year."""
+
+    def test_monthly_totals_cross_a_year(self):
+        self.add('income', 100, '2025-11-30')
+        self.add('expense', 40, '2025-12-01')
+        self.add('expense', 60, '2026-01-31')
+        totals = trends.monthly_totals(self.personal, 'BDT', date(2025, 11, 15), date(2026, 2, 3))
+        self.assertEqual(
+            [(t['month'], t['income_minor'], t['expense_minor']) for t in totals],
+            [(date(2025, 11, 1), 100, 0), (date(2025, 12, 1), 0, 40), (date(2026, 1, 1), 0, 60),
+             (date(2026, 2, 1), 0, 0)],
+        )
+
+    def test_windows_and_trimming(self):
+        self.assertEqual(trends.month_window(date(2026, 2, 14), 3), (date(2025, 12, 1), date(2026, 2, 28)))
+        self.assertEqual(trends.month_window(date(2024, 2, 1), 1), (date(2024, 2, 1), date(2024, 2, 29)))
+        points = [{'date': date(2025, 1, 1)}, {'date': date(2025, 6, 1)}, {'date': date(2025, 9, 1)}]
+        self.assertEqual(trends.trim_months(points, date(2025, 9, 1), None), (points, 0))
+        self.assertEqual(trends.trim_months(points, date(2025, 9, 1), 12), (points, 0))
+        # Kept: April to September. January to March are hidden
+        self.assertEqual(trends.trim_months(points, date(2025, 9, 1), 6), (points[1:], 3))
+
+
+class SeriesCapTests(AccountTestCase):
+    """A month-by-month series keeps only the months the plan charts; all time stays free."""
+    plan = None
+
+    def seed_months(self):
+        # Ten months: 100 in each, from January to October 2026
+        for month in range(1, 11):
+            self.add('income', 100, f'2026-{month:02d}-05')
+
+    def test_free_keeps_the_latest_six_months_and_says_how_many_went(self):
+        self.seed_months()
+        series = self.summary(include='series')['series']
+        self.assertEqual(series['hidden_months'], 4)
+        self.assertEqual([p['date'] for p in series['points']],
+                         ['2026-05-01', '2026-06-01', '2026-07-01', '2026-08-01', '2026-09-01', '2026-10-01'])
+        # The balance still counts what is not shown
+        self.assertEqual(series['opening_minor'], 100000 + 400)
+        self.assertEqual(series['points'][-1]['balance_minor'], 100000 + 1000)
+
+    def test_a_plan_with_room_keeps_everything(self):
+        self.seed_months()
+        grant_plan(self.alice, 'plus')
+        series = self.summary(include='series')['series']
+        self.assertEqual((series['hidden_months'], len(series['points']), series['opening_minor']), (0, 10, 100000))
+
+    def test_not_enforcing_trims_nothing(self):
+        self.seed_months()
+        set_mode(BillingSettings.MODE_OFF)
+        self.assertEqual(self.summary(include='series')['series']['hidden_months'], 0)
+
+    def test_a_day_by_day_series_is_never_trimmed(self):
+        self.seed()
+        series = self.summary(include='series')['series']
+        self.assertEqual((series['monthly'], series['hidden_months'], len(series['points'])), (False, 0, 5))
+
+
 class SchemaTests(BillingTestCase):
     def test_the_endpoints_are_in_the_openapi_schema(self):
         paths = self.alice_client.get('/api/v1/schema/').data['paths']
         for path in ('transactions/', 'summary/'):
             self.assertIn(f'/api/v1/ledger/accounts/{{account_id}}/{path}', paths)
+        self.assertIn('/api/v1/ledger/workspaces/{workspace_id}/trends/', paths)
