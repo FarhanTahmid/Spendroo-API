@@ -70,6 +70,50 @@ class TrendsSerializer(serializers.Serializer):
     points = TrendPointSerializer(many=True, help_text='One per month, oldest first, empty months included.')
 
 
+class YearTotalsSerializer(serializers.Serializer):
+    income_minor = serializers.IntegerField()
+    expense_minor = serializers.IntegerField()
+    net_minor = serializers.IntegerField()
+
+
+class YearMonthSerializer(serializers.Serializer):
+    month = serializers.DateField(help_text='The first day of the month.')
+    amount_minor = serializers.IntegerField()
+
+
+class YearCategorySerializer(CategoryTotalSerializer):
+    previous_minor = serializers.IntegerField(help_text='Spent in the category the year before.')
+
+
+class YearReviewSerializer(serializers.Serializer):
+    """
+    Amounts are positive (net may not be), in minor units of `currency`. Worked
+    out as the app does (lib/features/insights/year_review.dart). Months are
+    ranked and averaged only once they are over.
+    """
+    year = serializers.IntegerField()
+    currency = serializers.CharField()
+    is_partial = serializers.BooleanField(help_text='This year, still under way.')
+    date_from = serializers.DateField()
+    date_to = serializers.DateField()
+    income_minor = serializers.IntegerField()
+    expense_minor = serializers.IntegerField()
+    net_minor = serializers.IntegerField(help_text='Income less expense; negative when more went out.')
+    savings_rate = serializers.IntegerField(allow_null=True, help_text='Net as a whole percent of income.')
+    previous = YearTotalsSerializer(allow_null=True, help_text='The year before; null when it has nothing.')
+    months = TrendPointSerializer(many=True, help_text='January to December, empty months included.')
+    biggest_month = YearMonthSerializer(allow_null=True, help_text='The closed month that spent most.')
+    smallest_month = YearMonthSerializer(
+        allow_null=True, help_text='The closed month that spent least, of two or more that spent anything.',
+    )
+    best_month = YearMonthSerializer(allow_null=True, help_text='The closed month that kept most of its income.')
+    months_in_green = serializers.IntegerField(help_text='Closed months with more in than out.')
+    average_expense_minor = serializers.IntegerField(allow_null=True, help_text='Spent per closed month.')
+    largest_expense_minor = serializers.IntegerField(help_text='The biggest single expense (or part of a split).')
+    top_categories = YearCategorySerializer(many=True, help_text='The five that took most, largest first.')
+    goals_reached = serializers.IntegerField(help_text='Savings goals that reached their target this year.')
+
+
 class AccountSummarySerializer(serializers.Serializer):
     """Amounts are positive, in minor units of `currency`."""
     currency = serializers.CharField()

@@ -11,11 +11,11 @@ from workspaces.models import Membership, Workspace
 from workspaces.tenancy import TenantScopedMixin
 from reminders.inbox import today_in
 from reports.periods import is_preset
-from . import goals, pagination, queries, trends
+from . import goals, pagination, queries, trends, year_review
 from .models import Account, SavingsGoal
 from .serializers import (
     AccountSummarySerializer, AccountTransactionPageSerializer, AccountTransactionSerializer, GoalSummarySerializer,
-    TrendsSerializer,
+    TrendsSerializer, YearReviewSerializer,
 )
 
 INCLUDES = ('categories', 'series')
@@ -180,6 +180,38 @@ class WorkspaceTrendsView(TenantScopedMixin, APIView):
             'date_to': last,
             'points': trends.monthly_totals(workspace, asked.currency, first, last),
         }).data)
+
+
+class WorkspaceYearReviewView(TenantScopedMixin, APIView):
+    """
+    GET ?year&currency
+
+    A year looked back on: totals, month by month, the top categories and the
+    year before beside it. A plan feature: 402 `insights.year_review` without it.
+    """
+    permission_classes = [IsAuthenticated]
+
+    @extend_schema(
+        parameters=[
+            OpenApiParameter(
+                'year', OpenApiTypes.INT,
+                description=f'From {year_review.FIRST_YEAR} to this year. This year by default; last year in January.',
+            ),
+            OpenApiParameter(
+                'currency', OpenApiTypes.STR, description="Three-letter code. The workspace's own by default.",
+            ),
+        ],
+        responses=YearReviewSerializer,
+    )
+    def get(self, request, workspace_id):
+        workspace = Workspace.objects.filter(id=workspace_id).first()
+        # Who may look comes before what the plan allows, so a stranger learns nothing of it
+        if workspace is None or workspace.role_of(request.user) not in Membership.MANAGER_ROLES:
+            raise NotFound('Workspace not found.')
+        gates.require(workspace, F.INSIGHTS_YEAR_REVIEW)
+        today = today_in(workspace)
+        asked = year_review.parse_year_params(request.query_params, today, workspace.default_currency)
+        return Response(YearReviewSerializer(year_review.review(workspace, asked.currency, asked.year, today)).data)
 
 
 class GoalSummaryView(TenantScopedMixin, APIView):

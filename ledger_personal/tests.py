@@ -1,4 +1,4 @@
-from datetime import date
+from datetime import date, datetime, timezone as dt_timezone
 import uuid
 
 from django.core.exceptions import ValidationError
@@ -13,8 +13,8 @@ from workspaces.models import Membership
 from workspaces.tests import UnprivilegedRoleMixin
 from reminders.inbox import today_in
 from reports.periods import LAST_3_MONTHS, THIS_YEAR, resolve
-from . import trends
-from .models import Account, Category, Transaction
+from . import trends, year_review
+from .models import Account, Category, SavingsGoal, Transaction
 
 
 class AccountTestCase(BillingTestCase):
@@ -555,9 +555,188 @@ class SeriesCapTests(AccountTestCase):
         self.assertEqual((series['monthly'], series['hidden_months'], len(series['points'])), (False, 0, 5))
 
 
+class YearReviewTestCase(AccountTestCase):
+    """
+    2025 looked back on, with some of 2024 to set it against. seed_year() gives
+    the figures the app's own tests use (test/year_review_test.dart), so the
+    same review is expected on both sides.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.home = Category.objects.create(workspace=self.personal, name='Home', kind='expense')
+
+    def goal(self, name, reached_at):
+        account = Account.objects.create(workspace=self.personal, name=name, kind='goal')
+        goal = SavingsGoal.objects.create(workspace=self.personal, account=account, name=name, target_minor=100)
+        SavingsGoal.objects.filter(id=goal.id).update(reached_at=reached_at)
+        return goal
+
+    def seed_year(self):
+        self.add('income', 300000, '2024-03-10', category=self.salary)
+        self.add('expense', 100000, '2024-03-12', category=self.food)
+        self.add('income', 500000, '2025-01-05', category=self.salary)
+        self.add('expense', 120000, '2025-01-20', category=self.food)
+        self.add('expense', 30000, '2025-02-14')
+        self.split('expense', '2025-03-03', [(self.food, 40000), (self.home, 160000)])
+        self.add('income', 100000, '2025-03-25', category=self.salary)
+        self.add('expense', 10000, '2025-12-31', category=self.food)
+        # Neither income nor expense, and not in the currency asked for
+        self.transfer(self.cash, self.bank, 50000, '2025-06-01')
+        dollars = Account.objects.create(workspace=self.personal, name='Payoneer', kind='bank', currency='USD')
+        self.add('income', 900, '2025-06-02', account=dollars)
+        self.add('expense', 777, '2025-06-03').soft_delete()
+        self.goal('Laptop', datetime(2025, 7, 1, tzinfo=dt_timezone.utc))
+        self.goal('Phone', datetime(2024, 7, 1, tzinfo=dt_timezone.utc))
+
+
+class YearReviewMathTests(YearReviewTestCase):
+    def review(self, year=2025, today=date(2026, 10, 17)):
+        return year_review.review(self.personal, 'BDT', year, today)
+
+    def test_a_closed_year_in_full(self):
+        self.seed_year()
+        data = self.review()
+        self.assertEqual(
+            {key: data[key] for key in ('income_minor', 'expense_minor', 'net_minor', 'savings_rate', 'is_partial')},
+            {'income_minor': 600000, 'expense_minor': 360000, 'net_minor': 240000, 'savings_rate': 40,
+             'is_partial': False},
+        )
+        self.assertEqual(data['previous'], {'income_minor': 300000, 'expense_minor': 100000, 'net_minor': 200000})
+        self.assertEqual(len(data['months']), 12)
+        self.assertEqual(
+            [(m['month'].month, m['income_minor'], m['expense_minor']) for m in data['months'] if
+             m['income_minor'] or m['expense_minor']],
+            [(1, 500000, 120000), (2, 0, 30000), (3, 100000, 200000), (12, 0, 10000)],
+        )
+        self.assertEqual(data['biggest_month'], {'month': date(2025, 3, 1), 'amount_minor': 200000})
+        self.assertEqual(data['smallest_month'], {'month': date(2025, 12, 1), 'amount_minor': 10000})
+        self.assertEqual(data['best_month'], {'month': date(2025, 1, 1), 'amount_minor': 380000})
+        self.assertEqual((data['months_in_green'], data['average_expense_minor']), (1, 30000))
+        self.assertEqual((data['largest_expense_minor'], data['goals_reached']), (160000, 1))
+
+    def test_categories_count_each_part_of_a_split_and_carry_the_year_before(self):
+        self.seed_year()
+        self.assertEqual(
+            [(c['name'], c['amount_minor'], c['count'], c['largest_minor'], c['previous_minor'])
+             for c in self.review()['top_categories']],
+            [('Food', 170000, 3, 120000, 100000), ('Home', 160000, 1, 160000, 0), (None, 30000, 1, 30000, 0)],
+        )
+
+    def test_a_deleted_category_reads_as_none_and_only_five_are_kept(self):
+        self.seed_year()
+        self.home.soft_delete()
+        names = [(c['name'], c['amount_minor']) for c in self.review()['top_categories']]
+        self.assertEqual(names, [(None, 190000), ('Food', 170000)])
+        for index in range(6):
+            category = Category.objects.create(workspace=self.personal, name=f'C{index}', kind='expense')
+            self.add('expense', 1000 + index, '2025-05-05', category=category)
+        self.assertEqual(len(self.review()['top_categories']), year_review.TOP_CATEGORIES)
+
+    def test_a_year_under_way_ranks_only_the_months_that_are_over(self):
+        self.add('expense', 50000, '2026-01-10')
+        self.add('expense', 40000, '2026-02-10')
+        self.add('income', 100000, '2026-03-01')
+        self.add('expense', 1, '2026-03-02')
+        data = self.review(2026, today=date(2026, 3, 15))
+        self.assertTrue(data['is_partial'])
+        self.assertEqual(data['biggest_month']['month'], date(2026, 1, 1))
+        # March is still under way, so it is neither the smallest nor the best
+        self.assertEqual(data['smallest_month']['month'], date(2026, 2, 1))
+        self.assertIsNone(data['best_month'])
+        self.assertEqual((data['months_in_green'], data['average_expense_minor']), (0, 45000))
+        self.assertEqual(data['expense_minor'], 90001)
+        self.assertIsNone(data['previous'])
+
+        january = self.review(2026, today=date(2026, 1, 20))
+        self.assertEqual((january['biggest_month'], january['average_expense_minor']), (None, None))
+
+    def test_an_empty_or_overspent_year(self):
+        empty = self.review(2024)
+        self.assertEqual((empty['income_minor'], empty['savings_rate'], empty['previous']), (0, None, None))
+        self.assertEqual((empty['biggest_month'], empty['smallest_month'], empty['top_categories']), (None, None, []))
+        self.add('income', 1000, '2024-01-01')
+        self.add('expense', 1155, '2024-01-02')
+        self.assertEqual(self.review(2024)['savings_rate'], -16)
+
+    def test_percent_rounds_half_away_from_zero_like_dart(self):
+        cases = [((1, 8), 13), ((-1, 8), -13), ((1, 3), 33), ((2, 3), 67), ((-155, 1000), -16), ((5, 0), None)]
+        for (part, whole), expected in cases:
+            self.assertEqual(year_review.percent(part, whole), expected, (part, whole))
+
+    def test_the_default_year_is_last_year_in_january(self):
+        self.assertEqual(year_review.default_year(date(2026, 1, 31)), 2025)
+        self.assertEqual(year_review.default_year(date(2026, 2, 1)), 2026)
+
+
+class YearReviewTests(UnprivilegedRoleMixin, YearReviewTestCase):
+    plan = None
+
+    def setUp(self):
+        super().setUp()
+        self.review_url = f'/api/v1/ledger/workspaces/{self.personal.id}/year-review/'
+
+    def get(self, client=None, **params):
+        return (client or self.alice_client).get(self.review_url, params)
+
+    def test_free_is_refused_and_told_where_to_go(self):
+        response = self.get(year=2025)
+        self.assertEqual(response.status_code, 402)
+        self.assertEqual(
+            {key: response.data[key] for key in ('code', 'feature', 'reason', 'plan', 'upgrade_to')},
+            {'code': 'plan_limit', 'feature': 'insights.year_review', 'reason': 'feature', 'plan': 'free',
+             'upgrade_to': 'plus'},
+        )
+
+    def test_plus_gets_the_review(self):
+        self.seed_year()
+        grant_plan(self.alice, 'plus')
+        response = self.get(year=2025)
+        self.assertEqual(response.status_code, 200, response.data)
+        data = response.data
+        self.assertEqual((data['year'], data['currency'], data['date_from'], data['date_to']),
+                         (2025, 'BDT', '2025-01-01', '2025-12-31'))
+        self.assertEqual((data['net_minor'], data['savings_rate'], data['goals_reached']), (240000, 40, 1))
+        self.assertEqual(data['biggest_month'], {'month': '2025-03-01', 'amount_minor': 200000})
+        self.assertEqual(data['top_categories'][0]['previous_minor'], 100000)
+        usd = self.get(year=2025, currency='usd').data
+        self.assertEqual((usd['currency'], usd['income_minor'], usd['top_categories']), ('USD', 900, []))
+
+    def test_the_default_year_and_bad_parameters(self):
+        grant_plan(self.alice, 'plus')
+        today = today_in(self.personal)
+        self.assertEqual(self.get().data['year'], year_review.default_year(today))
+        for params in ({'year': 'last'}, {'year': 1999}, {'year': today.year + 1}, {'currency': 'TAKA'}):
+            self.assertEqual(self.get(**params).status_code, 400, params)
+
+    def test_log_only_lets_it_through_and_notes_the_hit(self):
+        set_mode(BillingSettings.MODE_LOG_ONLY)
+        self.assertEqual(self.get(year=2025).status_code, 200)
+        hit = FunnelEvent.objects.get(kind=FunnelEvent.KIND_LIMIT_HIT)
+        self.assertEqual((hit.feature_key, hit.enforced), ('insights.year_review', False))
+
+    def test_a_stranger_learns_nothing_not_even_the_plan(self):
+        response = self.get(client=self.bob_client)
+        self.assertEqual((response.status_code, response.data), (404, {'detail': 'Workspace not found.'}))
+        self.assertEqual(
+            self.alice_client.get(f'/api/v1/ledger/workspaces/{uuid.uuid4()}/year-review/').status_code, 404,
+        )
+        Membership.objects.create(workspace=self.personal, user=self.bob, role=Membership.ROLE_VIEWER)
+        self.assertEqual(self.get(client=self.bob_client).status_code, 404)
+        self.assertIn(APIClient().get(self.review_url).status_code, (401, 403))
+
+    def test_row_level_security_lets_the_owner_read(self):
+        self.seed_year()
+        grant_plan(self.alice, 'plus')
+        self.use_unprivileged_role()
+        response = self.get(year=2025)
+        self.assertEqual((response.status_code, response.data['income_minor']), (200, 600000))
+
+
 class SchemaTests(BillingTestCase):
     def test_the_endpoints_are_in_the_openapi_schema(self):
         paths = self.alice_client.get('/api/v1/schema/').data['paths']
         for path in ('transactions/', 'summary/'):
             self.assertIn(f'/api/v1/ledger/accounts/{{account_id}}/{path}', paths)
         self.assertIn('/api/v1/ledger/workspaces/{workspace_id}/trends/', paths)
+        self.assertIn('/api/v1/ledger/workspaces/{workspace_id}/year-review/', paths)
