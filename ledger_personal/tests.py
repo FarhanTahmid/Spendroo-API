@@ -612,7 +612,7 @@ class YearReviewMathTests(YearReviewTestCase):
         self.assertEqual(data['biggest_month'], {'month': date(2025, 3, 1), 'amount_minor': 200000})
         self.assertEqual(data['smallest_month'], {'month': date(2025, 12, 1), 'amount_minor': 10000})
         self.assertEqual(data['best_month'], {'month': date(2025, 1, 1), 'amount_minor': 380000})
-        self.assertEqual((data['months_in_green'], data['average_expense_minor']), (1, 30000))
+        self.assertEqual((data['months_in_green'], data['tracked_months'], data['average_expense_minor']), (1, 12, 30000))
         self.assertEqual((data['largest_expense_minor'], data['goals_reached']), (160000, 1))
 
     def test_categories_count_each_part_of_a_split_and_carry_the_year_before(self):
@@ -650,6 +650,20 @@ class YearReviewMathTests(YearReviewTestCase):
 
         january = self.review(2026, today=date(2026, 1, 20))
         self.assertEqual((january['biggest_month'], january['average_expense_minor']), (None, None))
+
+    def test_months_from_before_the_first_transaction_are_not_averaged_or_counted(self):
+        # Recording started in the middle of August, as on the app's side (test/year_review_test.dart)
+        self.add('income', 5000, '2026-08-14')
+        self.add('expense', 40869, '2026-08-20')
+        self.add('income', 74950, '2026-09-01')
+        self.add('expense', 41079, '2026-09-02')
+        self.add('income', 65000, '2026-10-01')
+        self.add('expense', 31910, '2026-10-02')
+        data = self.review(2026)
+        self.assertEqual(data['tracked_months'], 2)
+        self.assertEqual(data['average_expense_minor'], (40869 + 41079) // 2)
+        self.assertEqual(data['months_in_green'], 1)
+        self.assertEqual(data['smallest_month'], {'month': date(2026, 8, 1), 'amount_minor': 40869})
 
     def test_an_empty_or_overspent_year(self):
         empty = self.review(2024)

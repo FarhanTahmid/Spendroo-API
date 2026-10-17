@@ -9,6 +9,9 @@ same result, so the rules below are kept short and mirrored there:
 - A month is "closed" once it is over. Ranking months (biggest, smallest, best)
   and the monthly average look at closed months only, so a month still under
   way never reads as the smallest.
+- Closed months are "tracked" from the month of the workspace's first
+  transaction: the average and the months in the green leave out months from
+  before anything was recorded.
 - Percentages are rounded half away from zero, as Dart's round() does.
 - Transfers are neither income nor expense; each part of a split counts under
   its own category; a deleted category reads as no category.
@@ -16,6 +19,7 @@ same result, so the rules below are kept short and mirrored there:
 from dataclasses import dataclass
 from datetime import date
 
+from django.db.models import Min
 from rest_framework.exceptions import ParseError
 
 from . import allocations, trends
@@ -129,10 +133,12 @@ def review(workspace, currency, year, today):
     previous_expense = sum(m['expense_minor'] for m in before)
 
     closed = months[:closed_months(year, today)]
+    since = Transaction.objects.filter(workspace=workspace).aggregate(first=Min('occurred_on'))['first']
+    tracked = [m for m in closed if since and m['month'] >= since.replace(day=1)]
     spent = [m for m in closed if m['expense_minor'] > 0]
     biggest = _ranked(spent, lambda m: m['expense_minor'], largest=True)
     smallest = _ranked(spent, lambda m: m['expense_minor'], largest=False) if len(spent) > 1 else None
-    saving = [m for m in closed if m['income_minor'] - m['expense_minor'] > 0]
+    saving = [m for m in tracked if m['income_minor'] - m['expense_minor'] > 0]
     best = _ranked(saving, lambda m: m['income_minor'] - m['expense_minor'], largest=True)
 
     categories = category_totals(workspace, currency, first, last, date(year - 1, 1, 1))
@@ -159,7 +165,8 @@ def review(workspace, currency, year, today):
         'smallest_month': smallest and {'month': smallest['month'], 'amount_minor': smallest['expense_minor']},
         'best_month': best and {'month': best['month'], 'amount_minor': best['income_minor'] - best['expense_minor']},
         'months_in_green': len(saving),
-        'average_expense_minor': sum(m['expense_minor'] for m in closed) // len(closed) if closed else None,
+        'tracked_months': len(tracked),
+        'average_expense_minor': sum(m['expense_minor'] for m in tracked) // len(tracked) if tracked else None,
         'largest_expense_minor': max((c['largest_minor'] for c in categories), default=0),
         'top_categories': categories[:TOP_CATEGORIES],
         'goals_reached': SavingsGoal.objects.filter(workspace=workspace, reached_at__year=year).count(),

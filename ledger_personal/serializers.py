@@ -107,8 +107,12 @@ class YearReviewSerializer(serializers.Serializer):
         allow_null=True, help_text='The closed month that spent least, of two or more that spent anything.',
     )
     best_month = YearMonthSerializer(allow_null=True, help_text='The closed month that kept most of its income.')
-    months_in_green = serializers.IntegerField(help_text='Closed months with more in than out.')
-    average_expense_minor = serializers.IntegerField(allow_null=True, help_text='Spent per closed month.')
+    months_in_green = serializers.IntegerField(help_text='Tracked months with more in than out.')
+    tracked_months = serializers.IntegerField(
+        help_text='Closed months from the month of the first transaction on: what the average and the months '
+                  'in the green are out of.',
+    )
+    average_expense_minor = serializers.IntegerField(allow_null=True, help_text='Spent per tracked month.')
     largest_expense_minor = serializers.IntegerField(help_text='The biggest single expense (or part of a split).')
     top_categories = YearCategorySerializer(many=True, help_text='The five that took most, largest first.')
     goals_reached = serializers.IntegerField(help_text='Savings goals that reached their target this year.')
