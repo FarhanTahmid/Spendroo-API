@@ -1,5 +1,7 @@
 from django.contrib import admin
 from unfold.admin import ModelAdmin, TabularInline
+
+from sync.admin import TombstoneOnDeleteAdmin
 from django.utils.html import format_html
 from spendroo.money import format_money
 from .models import (
@@ -9,7 +11,7 @@ from .models import (
 
 
 @admin.register(CashBook)
-class CashBookAdmin(ModelAdmin):
+class CashBookAdmin(TombstoneOnDeleteAdmin, ModelAdmin):
     list_display = ['id','book_name', 'workspace', 'currency', 'get_balance_display', 'created_at', 'updated_at']
     list_filter = ['currency', 'created_at', 'updated_at']
     search_fields = ['book_name', 'workspace__name', 'workspace__owner__email']
@@ -44,7 +46,7 @@ class CashBookAdmin(ModelAdmin):
 
 
 @admin.register(CashBookAdditionalMember)
-class CashBookAdditionalMemberAdmin(ModelAdmin):
+class CashBookAdditionalMemberAdmin(TombstoneOnDeleteAdmin, ModelAdmin):
     list_display = ['member', 'cashbook', 'role', 'added_by', 'created_at']
     list_filter = ['role', 'created_at']
     search_fields = ['member__email', 'member__username', 'cashbook__book_name']
@@ -61,7 +63,7 @@ class CashBookAdditionalMemberAdmin(ModelAdmin):
 
 
 @admin.register(EntryCategory)
-class EntryCategoryAdmin(ModelAdmin):
+class EntryCategoryAdmin(TombstoneOnDeleteAdmin, ModelAdmin):
     list_display = ['category_name', 'cashbook', 'color', 'is_default', 'created_at']
     list_filter = ['is_default', 'created_at']
     search_fields = ['category_name', 'cashbook__book_name']
@@ -78,7 +80,7 @@ class EntryCategoryAdmin(ModelAdmin):
 
 
 @admin.register(PaymentMethod)
-class PaymentMethodAdmin(ModelAdmin):
+class PaymentMethodAdmin(TombstoneOnDeleteAdmin, ModelAdmin):
     list_display = ['payment_method_name', 'cashbook', 'is_default', 'created_at']
     list_filter = ['is_default', 'created_at']
     search_fields = ['payment_method_name', 'cashbook__book_name']
@@ -109,7 +111,7 @@ class EntryExtraFieldsInline(TabularInline):
 
 
 @admin.register(Entry)
-class EntryAdmin(ModelAdmin):
+class EntryAdmin(TombstoneOnDeleteAdmin, ModelAdmin):
     list_display = ['title', 'cashbook', 'entry_type', 'amount_minor', 'currency', 'category', 'payment_method', 'entry_date', 'created_by']
     list_filter = ['entry_type', 'source', 'entry_date', 'created_at']
     search_fields = ['title', 'remarks', 'cashbook__book_name', 'created_by__email']

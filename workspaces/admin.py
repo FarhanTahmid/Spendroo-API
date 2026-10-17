@@ -1,5 +1,7 @@
 from django.contrib import admin
 from unfold.admin import ModelAdmin, TabularInline
+from sync.admin import WholeRemovalAdmin
+
 from .models import Workspace, Membership
 
 
@@ -10,7 +12,7 @@ class MembershipInline(TabularInline):
 
 
 @admin.register(Workspace)
-class WorkspaceAdmin(ModelAdmin):
+class WorkspaceAdmin(WholeRemovalAdmin, ModelAdmin):
     list_display = ['name', 'kind', 'owner', 'default_currency', 'created_at']
     list_filter = ['kind', 'created_at']
     search_fields = ['name', 'owner__email']

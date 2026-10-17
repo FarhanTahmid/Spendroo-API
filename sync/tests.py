@@ -542,3 +542,136 @@ class UnprivilegedRoleEndToEndTests(UnprivilegedRoleMixin, SyncTestCase):
                             self.upsert('entries', entry['row_id'], amount_minor=1))
         self.assertEqual(results[0]['status'], 'rejected')
         self.assertEqual(self.bob_client.get('/api/v1/cashbooks/').data['results'], [])
+
+
+CENSUS = '/api/v1/sync/census/'
+
+
+class HardDeleteGuardTests(SyncTestCase):
+    """A hard delete leaves no tombstone, so phones would keep the row for good: the database refuses it."""
+
+    def test_every_synced_table_refuses_a_hard_delete(self):
+        from django.db import connection
+
+        from .guard import TRIGGER
+        with connection.cursor() as cursor:
+            cursor.execute('SELECT tgrelid::regclass::text FROM pg_trigger WHERE tgname = %s', [TRIGGER])
+            guarded = {name.strip('"') for (name,) in cursor.fetchall()}
+        tables = {table.model._meta.db_table for table in TABLES.values()}
+        self.assertEqual(tables - guarded, set(), 'add sync.guard.guard_deletes() for these in a migration')
+
+    def test_a_hard_delete_is_refused_and_the_row_stays(self):
+        from django.db import IntegrityError, transaction
+        cash = Account.objects.get(workspace=self.personal, name='Cash')
+        row = Transaction.objects.create(account=cash, kind='expense', amount_minor=-2300, occurred_on='2026-10-01')
+        for queryset in (Transaction.all_objects.filter(id=row.id), Account.all_objects.filter(id=cash.id)):
+            with self.assertRaises(IntegrityError), transaction.atomic():
+                queryset.delete()
+        self.assertTrue(Transaction.objects.filter(id=row.id).exists())
+
+    def test_removing_a_whole_workspace_is_the_one_way_through(self):
+        from django.contrib import admin
+        from django.db import IntegrityError, transaction
+
+        from workspaces.models import Workspace
+        from .guard import allow_hard_delete
+        cash = Account.objects.get(workspace=self.personal, name='Cash')
+        Transaction.objects.create(account=cash, kind='expense', amount_minor=-100, occurred_on='2026-10-01')
+        CashBook.objects.create(workspace=self.shop, book_name='Till')
+        with self.assertRaises(IntegrityError), transaction.atomic():
+            self.shop.delete()
+        # Through the admin a business goes whole, its book with it
+        admin.site._registry[Workspace].delete_model(None, self.shop)
+        self.assertFalse(Workspace.objects.filter(id=self.shop.id).exists())
+        with allow_hard_delete():
+            self.personal.delete()
+        self.assertFalse(Transaction.all_objects.filter(account=cash).exists())
+        # The permission ends with the block
+        other = get_personal_workspace(self.bob)
+        with self.assertRaises(IntegrityError), transaction.atomic():
+            Account.all_objects.filter(workspace=other).delete()
+
+    def test_a_tombstone_reaches_the_phone(self):
+        from .guard import tombstone
+        cash = Account.objects.get(workspace=self.personal, name='Cash')
+        row = Transaction.objects.create(account=cash, kind='expense', amount_minor=-5600, occurred_on='2026-10-03')
+        since = self.pull(self.alice_client, self.personal)['next_since']
+        self.assertEqual(tombstone(Transaction.objects.filter(id=row.id)), 1)
+        changes = self.pull(self.alice_client, self.personal, since=since)['changes']['transactions']
+        self.assertEqual([(str(r['id']), r['deleted_at'] is not None) for r in changes], [(str(row.id), True)])
+
+
+class AdminDeleteTests(SyncTestCase):
+    def test_every_synced_model_is_tombstoned_by_the_admin(self):
+        from django.contrib import admin
+
+        from .admin import TombstoneOnDeleteAdmin
+        for table in TABLES.values():
+            model_admin = admin.site._registry.get(table.model)
+            if model_admin is not None:
+                self.assertIsInstance(model_admin, TombstoneOnDeleteAdmin, table.model.__name__)
+
+    def test_deleting_in_the_admin_leaves_a_tombstone(self):
+        from django.contrib import admin
+        cash = Account.objects.get(workspace=self.personal, name='Cash')
+        rows = [
+            Transaction.objects.create(account=cash, kind='expense', amount_minor=-amount, occurred_on='2026-10-01')
+            for amount in (100, 200)
+        ]
+        model_admin = admin.site._registry[Transaction]
+        model_admin.delete_queryset(None, Transaction.objects.filter(id__in=[r.id for r in rows]))
+        self.assertEqual(
+            Transaction.all_objects.filter(id__in=[r.id for r in rows], deleted_at__isnull=False).count(), 2,
+        )
+        deleted, _, perms_needed, protected = model_admin.get_deleted_objects([cash], None)
+        self.assertEqual((len(deleted), perms_needed, protected), (1, set(), []))
+
+
+class SeedDemoTests(SyncTestCase):
+    def test_a_reset_tombstones_what_it_replaces(self):
+        from django.core.management import call_command
+        cash = Account.objects.get(workspace=self.personal, name='Cash')
+        mine = Transaction.objects.create(account=cash, kind='expense', amount_minor=-2300, occurred_on='2026-10-01')
+        since = self.pull(self.alice_client, self.personal)['next_since']
+        call_command('seed_demo', self.alice.username, '--reset', stdout=mock.MagicMock())
+        changes = self.pull(self.alice_client, self.personal, since=since)['changes']
+        gone = {str(r['id']) for r in changes['transactions'] if r['deleted_at']}
+        self.assertIn(str(mine.id), gone)
+        # Again on top: the demo rows are tombstoned in turn and nothing is refused
+        call_command('seed_demo', self.alice.username, '--reset', stdout=mock.MagicMock())
+
+
+class CensusTests(SyncTestCase):
+    def census(self, table, ids, client=None, workspace=None):
+        return (client or self.alice_client).post(
+            CENSUS, {'workspace': str((workspace or self.personal).id), 'table': table, 'ids': ids}, format='json',
+        )
+
+    def test_rows_the_server_does_not_have_are_named(self):
+        from .guard import tombstone
+        cash = Account.objects.get(workspace=self.personal, name='Cash')
+        kept = Transaction.objects.create(account=cash, kind='expense', amount_minor=-100, occurred_on='2026-10-01')
+        deleted = Transaction.objects.create(account=cash, kind='expense', amount_minor=-200, occurred_on='2026-10-01')
+        tombstone(Transaction.objects.filter(id=deleted.id))
+        ghost = new_id()
+        response = self.census('transactions', [str(kept.id), str(deleted.id), ghost])
+        self.assertEqual(response.status_code, 200, response.data)
+        # A tombstone is not missing: the pull already tells the phone
+        self.assertEqual(response.data, {'missing': [ghost]})
+
+    def test_another_workspaces_rows_count_as_missing(self):
+        book = CashBook.objects.create(workspace=self.shop, book_name='Till')
+        # The shop's book, asked about in the personal workspace
+        self.assertEqual(self.census('cashbooks', [str(book.id)]).data, {'missing': [str(book.id)]})
+        self.assertEqual(self.census('cashbooks', [str(book.id)], workspace=self.shop).data, {'missing': []})
+
+    def test_bad_requests(self):
+        from .views import MAX_CENSUS_IDS
+        self.assertEqual(self.census('transactions', [new_id()], client=self.bob_client).status_code, 404)
+        self.assertEqual(self.census('users', [new_id()]).status_code, 400)
+        self.assertEqual(self.census('transactions', 'all').status_code, 400)
+        self.assertEqual(self.census('transactions', ['not-an-id']).status_code, 400)
+        self.assertEqual(
+            self.census('transactions', [new_id() for _ in range(MAX_CENSUS_IDS + 1)]).status_code, 400,
+        )
+        self.assertIn(APIClient().post(CENSUS, {}, format='json').status_code, (401, 403))

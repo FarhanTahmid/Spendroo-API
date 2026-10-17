@@ -1,13 +1,15 @@
 from django.contrib import admin
 from unfold.admin import ModelAdmin
 
+from sync.admin import TombstoneOnDeleteAdmin
+
 from ledger_personal.admin import SYNC_READONLY
 
 from .models import InboxItem, Occurrence, Rule
 
 
 @admin.register(Rule)
-class RuleAdmin(ModelAdmin):
+class RuleAdmin(TombstoneOnDeleteAdmin, ModelAdmin):
     list_display = ['title', 'kind', 'freq', 'interval', 'mode', 'next_due_on', 'is_paused', 'ended', 'workspace']
     list_filter = ['kind', 'freq', 'mode', 'is_paused', 'ended']
     search_fields = ['title', 'note', 'workspace__owner__email']
@@ -15,7 +17,7 @@ class RuleAdmin(ModelAdmin):
 
 
 @admin.register(Occurrence)
-class OccurrenceAdmin(ModelAdmin):
+class OccurrenceAdmin(TombstoneOnDeleteAdmin, ModelAdmin):
     list_display = ['rule', 'due_on', 'status', 'snoozed_until', 'workspace']
     list_filter = ['status', 'due_on']
     search_fields = ['rule__title', 'workspace__owner__email']
@@ -24,7 +26,7 @@ class OccurrenceAdmin(ModelAdmin):
 
 
 @admin.register(InboxItem)
-class InboxItemAdmin(ModelAdmin):
+class InboxItemAdmin(TombstoneOnDeleteAdmin, ModelAdmin):
     list_display = ['type', 'dedupe_key', 'notify_at', 'pushed_at', 'read_at', 'resolved_at', 'workspace']
     list_filter = ['type']
     search_fields = ['dedupe_key', 'workspace__owner__email']

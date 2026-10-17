@@ -23,6 +23,7 @@ from .registry import TABLES, accessible_cashbook_ids
 DEFAULT_PULL_LIMIT = 500
 MAX_PULL_LIMIT = 1000
 MAX_PUSH_MUTATIONS = 200
+MAX_CENSUS_IDS = 1000
 BUDGET_TABLES = ('transactions', 'budgets')
 GOAL_TABLES = ('transactions', 'savings_goals')
 
@@ -150,6 +151,56 @@ class PullView(TenantScopedMixin, APIView):
             ),
             'billing_stamp': Stamp.current(request.user.pk),
         })
+
+
+class CensusView(TenantScopedMixin, APIView):
+    """
+    POST {"workspace": <id>, "table": "transactions", "ids": [<row id>, ...]}
+
+    Of the rows a phone holds, those the server does not have at all. A row
+    the server deleted outright (never meant to happen: see sync/guard.py)
+    sends no tombstone, so the phone would keep it for good; the app asks this
+    now and then and drops what is missing. Tombstoned rows are not missing:
+    the pull already tells the phone about them.
+    """
+    permission_classes = [IsAuthenticated]
+    throttle_classes = [ScopedRateThrottle]
+    throttle_scope = 'sync'
+    # POST only to carry the ids
+    billing_gate = gates.exempt('Reads only: which rows a phone holds that the server no longer has.')
+
+    @extend_schema(
+        request=inline_serializer('SyncCensusRequest', {
+            'workspace': serializers.UUIDField(),
+            'table': serializers.ChoiceField(choices=list(TABLES)),
+            'ids': serializers.ListField(child=serializers.UUIDField(), max_length=MAX_CENSUS_IDS),
+        }),
+        responses=inline_serializer('SyncCensusResponse', {
+            'missing': serializers.ListField(
+                child=serializers.UUIDField(), help_text='Rows to drop from the phone: the server has no such row.',
+            ),
+        }),
+    )
+    def post(self, request):
+        workspace, role = get_workspace_and_role(request.user, request.data.get('workspace'))
+        if workspace is None:
+            return Response({'detail': 'Workspace not found.'}, status=status.HTTP_404_NOT_FOUND)
+        table = TABLES.get(request.data.get('table'))
+        ids = request.data.get('ids')
+        if table is None or not isinstance(ids, list) or len(ids) > MAX_CENSUS_IDS:
+            return Response(
+                {'detail': f'table must be a synced table and ids a list of at most {MAX_CENSUS_IDS}.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        try:
+            asked = {uuid.UUID(str(row_id)) for row_id in ids}
+        except ValueError:
+            return Response({'detail': 'ids must be row ids.'}, status=status.HTTP_400_BAD_REQUEST)
+        # What this user could pull, tombstones included: anything else the phone should not hold
+        held = set(table.visible(
+            table.model.all_objects.filter(workspace=workspace, id__in=asked), request.user, role,
+        ).values_list('id', flat=True))
+        return Response({'missing': sorted(str(row_id) for row_id in asked - held)})
 
 
 class PushView(TenantScopedMixin, APIView):

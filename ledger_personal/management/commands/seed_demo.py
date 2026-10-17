@@ -8,6 +8,7 @@ from django.utils import timezone
 
 from identity.models import AppUser
 from ledger_personal.models import Account, Budget, Category, Transaction
+from sync.guard import tombstone
 from workspaces.services import get_personal_workspace
 
 # (name, kind, opening balance in major units)
@@ -53,7 +54,8 @@ class Command(BaseCommand):
         parser.add_argument('--days', type=int, default=61, help='How far back to start (default 61).')
         parser.add_argument('--seed', type=int, default=42, help='Random seed, for repeatable data.')
         parser.add_argument('--reset', action='store_true',
-                            help='Hard-delete the workspace\'s transactions, budgets and non-default accounts first.')
+                            help='Delete the workspace\'s transactions, budgets and non-default accounts first. '
+                                 'They are tombstoned, so signed-in phones drop them on their next sync.')
 
     def handle(self, *args, username, days, seed, reset, **options):
         user = AppUser.objects.filter(username__iexact=username).first()
@@ -65,12 +67,13 @@ class Command(BaseCommand):
         start = today - timedelta(days=days)
 
         with transaction.atomic():
-            if Transaction.all_objects.filter(workspace=workspace).exists() and not reset:
+            if Transaction.objects.filter(workspace=workspace).exists() and not reset:
                 raise CommandError('This workspace already has transactions. Use --reset to replace them.')
             if reset:
-                Transaction.all_objects.filter(workspace=workspace).delete()
-                Budget.all_objects.filter(workspace=workspace).delete()
-                Account.all_objects.filter(workspace=workspace).exclude(name='Cash').delete()
+                # Never a hard delete: a phone learns a row is gone only from its tombstone
+                tombstone(Transaction.objects.filter(workspace=workspace))
+                tombstone(Budget.objects.filter(workspace=workspace))
+                tombstone(Account.objects.filter(workspace=workspace).exclude(name='Cash'))
 
             cash = Account.objects.filter(workspace=workspace, name='Cash').first() or Account.objects.create(
                 workspace=workspace, name='Cash', kind='cash', currency=workspace.default_currency)
