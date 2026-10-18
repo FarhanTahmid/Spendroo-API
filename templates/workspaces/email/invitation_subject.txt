@@ -1,0 +1,1 @@
+{% autoescape off %}{{ inviter }} invited you to {{ workspace }}{% endautoescape %}

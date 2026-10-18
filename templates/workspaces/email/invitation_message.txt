@@ -1,0 +1,11 @@
+{% autoescape off %}Hello,
+
+{{ inviter }} invited you to join {{ workspace }} on Spendroo as {{ role }}.
+
+To join, open the Spendroo app, sign in with this email address, and enter this code:
+
+{{ code }}
+
+The code works until {{ expires_at|date:"j F Y, H:i e" }}. If you did not expect this invitation, you can ignore this email.
+
+Spendroo{% endautoescape %}

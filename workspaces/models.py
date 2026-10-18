@@ -150,3 +150,62 @@ class Membership(SyncModel):
 
     def __str__(self):
         return f"{self.user.email} - {self.role} in {self.workspace.name}"
+
+
+@pghistory.track()
+class Invitation(models.Model):
+    """
+    An owner or admin asks someone to join a business with a role. The person
+    joins by entering the code; only its hash is kept. An invitation by email
+    can only be taken up by the account with that verified address; one by
+    phone by whoever the owner gave the code to.
+    """
+    ROLE_CHOICES = [choice for choice in Membership.ROLE_CHOICES if choice[0] != Membership.ROLE_OWNER]
+
+    STATUS_PENDING = 'pending'
+    STATUS_ACCEPTED = 'accepted'
+    STATUS_REVOKED = 'revoked'
+    STATUS_EXPIRED = 'expired'
+
+    id = models.UUIDField(primary_key=True, default=uuid7, editable=False)
+    workspace = models.ForeignKey(Workspace, on_delete=models.CASCADE, related_name='invitations')
+    email = models.EmailField(blank=True)
+    phone = models.CharField(max_length=20, blank=True)
+    role = models.CharField(max_length=10, choices=ROLE_CHOICES, default=Membership.ROLE_STAFF)
+    code_hash = models.CharField(max_length=64, unique=True, editable=False)
+    invited_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, related_name='invitations_sent'
+    )
+    expires_at = models.DateTimeField()
+    accepted_at = models.DateTimeField(null=True, blank=True)
+    accepted_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True, related_name='invitations_accepted'
+    )
+    revoked_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['created_at']
+        constraints = [
+            models.CheckConstraint(
+                condition=(models.Q(email='') & ~models.Q(phone='')) | (~models.Q(email='') & models.Q(phone='')),
+                name='invitation_has_email_or_phone',
+            ),
+        ]
+
+    def __str__(self):
+        return f"{self.email or self.phone} as {self.role} in {self.workspace.name}"
+
+    @property
+    def status(self):
+        if self.accepted_at is not None:
+            return self.STATUS_ACCEPTED
+        if self.revoked_at is not None:
+            return self.STATUS_REVOKED
+        if self.expires_at <= timezone.now():
+            return self.STATUS_EXPIRED
+        return self.STATUS_PENDING
+
+    @property
+    def is_pending(self):
+        return self.status == self.STATUS_PENDING

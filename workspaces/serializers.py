@@ -1,7 +1,9 @@
+import re
+
 from rest_framework import serializers
 
 from spendroo.money import validate_currency
-from .models import Workspace, Membership
+from .models import Invitation, Workspace, Membership
 
 
 class WorkspaceSerializer(serializers.ModelSerializer):
@@ -29,3 +31,51 @@ class MembershipSerializer(serializers.ModelSerializer):
         model = Membership
         fields = ['id', 'user', 'user_email', 'role', 'created_at']
         read_only_fields = fields
+
+
+class InvitationSerializer(serializers.ModelSerializer):
+    invited_by_email = serializers.EmailField(source='invited_by.email', read_only=True, default=None)
+    status = serializers.CharField(read_only=True)
+
+    class Meta:
+        model = Invitation
+        fields = ['id', 'email', 'phone', 'role', 'status', 'invited_by', 'invited_by_email', 'expires_at', 'created_at']
+        read_only_fields = fields
+
+
+class InvitationCreateSerializer(serializers.Serializer):
+    """Who to invite, by email or by phone, and as what."""
+    email = serializers.EmailField(required=False, allow_blank=True, default='')
+    phone = serializers.CharField(required=False, allow_blank=True, default='', max_length=30)
+    role = serializers.ChoiceField(choices=Invitation.ROLE_CHOICES, default=Membership.ROLE_STAFF)
+
+    def validate_email(self, value):
+        return value.strip().lower()
+
+    def validate_phone(self, value):
+        phone = re.sub(r'[\s\-().]', '', value)
+        if phone and not re.fullmatch(r'\+?\d{7,15}', phone):
+            raise serializers.ValidationError('Enter a phone number, such as +8801712345678.')
+        return phone
+
+    def validate(self, attrs):
+        if bool(attrs['email']) == bool(attrs['phone']):
+            raise serializers.ValidationError('Give an email address or a phone number, not both.')
+        return attrs
+
+
+class InvitationCodeSerializer(serializers.Serializer):
+    code = serializers.CharField(max_length=32)
+
+
+class InvitationPreviewSerializer(serializers.Serializer):
+    """What someone holding a code is about to join."""
+    workspace_id = serializers.UUIDField(source='workspace.id')
+    workspace_name = serializers.CharField(source='workspace.name')
+    invited_by = serializers.SerializerMethodField()
+    role = serializers.CharField()
+    email = serializers.EmailField()
+    expires_at = serializers.DateTimeField()
+
+    def get_invited_by(self, obj) -> str:
+        return obj.invited_by.full_name or obj.invited_by.email if obj.invited_by else ''

@@ -1,15 +1,28 @@
+from allauth.account.models import EmailAddress
 from django.apps import apps
 from django.contrib.auth import get_user_model
+from django.core import mail
+from django.core.cache import cache
 from django.db import connection
 from django.test import TestCase
+from django.utils import timezone
 from rest_framework.test import APIClient
 
+from billing.catalog.keys import F
+from billing.testing import grant_plan, set_limit
+from billing.tests.base import BillingTestCase, client_for
+
 from cashbook.models import CashBook, Entry
-from .models import Membership, Workspace, WorkspaceOwnedModel
+from . import invitations
+from .models import Invitation, Membership, Workspace, WorkspaceOwnedModel
 from .services import create_workspace, get_personal_workspace
 from .tenancy import activate_tenant_context, bypass_tenant_context, clear_tenant_context
 
 User = get_user_model()
+
+WORKSPACES = '/api/v1/workspaces/'
+ACCEPT = f'{WORKSPACES}invitations/accept/'
+PREVIEW = f'{WORKSPACES}invitations/preview/'
 
 # Apps whose models hold tenant data. Each model must carry the workspace key
 # and its table must have row-level security, unless listed as exempt.
@@ -223,3 +236,175 @@ class IdentifierTests(TestCase):
         self.assertEqual((first.id.version, second.id.version), (7, 7))
         # The leading 48 bits are the creation time in milliseconds
         self.assertLessEqual(first.id.int >> 80, second.id.int >> 80)
+
+
+class InvitationTests(BillingTestCase):
+    """Alice owns Shop on the Business plan (five seats); Bob and Carol are invited."""
+
+    def setUp(self):
+        super().setUp()
+        grant_plan(self.alice, 'business')
+        self.carol = User.objects.create_user(email='carol@example.com', password='pass-12345')
+        self.carol_client = client_for(self.carol)
+        for user in (self.bob, self.carol):
+            EmailAddress.objects.create(user=user, email=user.email, verified=True, primary=True)
+        self.url = f'{WORKSPACES}{self.shop.id}/invitations/'
+
+    def invite(self, client=None, **data):
+        return (client or self.alice_client).post(self.url, data, format='json')
+
+    def accept(self, client, code):
+        return client.post(ACCEPT, {'code': code}, format='json')
+
+    def test_invite_by_email_sends_the_code_and_keeps_only_its_hash(self):
+        response = self.invite(email='Bob@Example.com', role='viewer')
+        self.assertEqual(response.status_code, 201, response.data)
+        code = response.data['code']
+        self.assertEqual((response.data['email'], response.data['role'], response.data['emailed']), ('bob@example.com', 'viewer', True))
+        self.assertEqual(len(mail.outbox), 1)
+        self.assertEqual(mail.outbox[0].to, ['bob@example.com'])
+        self.assertIn(code, mail.outbox[0].body)
+        self.assertIn('Shop', mail.outbox[0].subject)
+        stored = Invitation.objects.get()
+        self.assertEqual(stored.code_hash, invitations.hash_code(code))
+        self.assertNotIn(code, str(Invitation.objects.values().get()))
+
+    def test_invite_by_phone_returns_the_code_and_sends_nothing(self):
+        response = self.invite(phone='+880 1712-345678')
+        self.assertEqual(response.status_code, 201, response.data)
+        self.assertEqual((response.data['phone'], response.data['role'], response.data['emailed']), ('+8801712345678', 'staff', False))
+        self.assertEqual(len(mail.outbox), 0)
+
+    def test_needs_an_email_or_a_phone_but_not_both(self):
+        self.assertEqual(self.invite().status_code, 400)
+        self.assertEqual(self.invite(email='bob@example.com', phone='+8801712345678').status_code, 400)
+        self.assertEqual(self.invite(phone='call me').status_code, 400)
+        self.assertEqual(self.invite(email='bob@example.com', role='owner').status_code, 400)
+
+    def test_owner_and_admins_invite_only_the_owner_invites_an_admin(self):
+        Membership.objects.create(workspace=self.shop, user=self.bob, role=Membership.ROLE_ADMIN)
+        Membership.objects.create(workspace=self.shop, user=self.carol, role=Membership.ROLE_STAFF)
+        self.assertEqual(self.invite(self.bob_client, phone='+8801711111111').status_code, 201)
+        self.assertEqual(self.invite(self.bob_client, phone='+8801722222222', role='admin').status_code, 403)
+        self.assertEqual(self.invite(self.carol_client, phone='+8801733333333').status_code, 403)
+        self.assertEqual(self.carol_client.get(self.url).status_code, 403)
+        self.assertEqual(self.invite(phone='+8801722222222', role='admin').status_code, 201)
+
+    def test_only_a_real_business_of_ones_own_takes_invitations(self):
+        personal = f'{WORKSPACES}{self.personal.id}/invitations/'
+        response = self.alice_client.post(personal, {'phone': '+8801712345678'}, format='json')
+        self.assertEqual((response.status_code, response.data['code']), (400, 'not_a_business'))
+        demo = self.alice_client.post(f'{WORKSPACES}demo/').data['id']
+        self.assertEqual(self.alice_client.post(f'{WORKSPACES}{demo}/invitations/', {'phone': '+8801712345678'}, format='json').status_code, 400)
+        self.assertEqual(self.invite(self.bob_client, phone='+8801712345678').status_code, 404)
+
+    def test_someone_already_in_the_business_is_not_invited(self):
+        Membership.objects.create(workspace=self.shop, user=self.bob, role=Membership.ROLE_STAFF)
+        response = self.invite(email='BOB@example.com')
+        self.assertEqual((response.status_code, response.data['code']), (400, 'already_member'))
+
+    def test_accepting_an_email_invitation_makes_a_member_with_the_role(self):
+        code = self.invite(email='bob@example.com', role='viewer').data['code']
+        preview = self.bob_client.get(PREVIEW, {'code': code.lower()})
+        self.assertEqual(preview.status_code, 200, preview.data)
+        self.assertEqual((preview.data['workspace_name'], preview.data['role'], preview.data['invited_by']), ('Shop', 'viewer', 'alice@example.com'))
+
+        response = self.accept(self.bob_client, f'{code[:5]}-{code[5:]}')
+        self.assertEqual(response.status_code, 200, response.data)
+        self.assertEqual((response.data['id'], response.data['role']), (str(self.shop.id), 'viewer'))
+        membership = Membership.objects.get(workspace=self.shop, user=self.bob)
+        self.assertEqual((membership.role, membership.added_by), ('viewer', self.alice))
+        invitation = Invitation.objects.get()
+        self.assertEqual((invitation.status, invitation.accepted_by), ('accepted', self.bob))
+        names = [w['name'] for w in self.bob_client.get(WORKSPACES).data['results']]
+        self.assertIn('Shop', names)
+
+    def test_an_email_invitation_is_only_for_that_verified_address(self):
+        code = self.invite(email='bob@example.com').data['code']
+        response = self.accept(self.carol_client, code)
+        self.assertEqual((response.status_code, response.data['code']), (400, 'wrong_account'))
+        EmailAddress.objects.filter(user=self.bob).update(verified=False)
+        self.assertEqual(self.accept(self.bob_client, code).data['code'], 'wrong_account')
+        self.assertFalse(Membership.objects.filter(workspace=self.shop).exclude(user=self.alice).exists())
+
+    def test_a_phone_invitation_is_for_whoever_has_the_code(self):
+        code = self.invite(phone='+8801712345678').data['code']
+        self.assertEqual(self.accept(self.carol_client, code).status_code, 200)
+        self.assertTrue(Membership.objects.filter(workspace=self.shop, user=self.carol, role='staff').exists())
+
+    def test_a_code_works_once_and_not_after_it_expires_or_is_cancelled(self):
+        code = self.invite(phone='+8801712345678').data['code']
+        self.assertEqual(self.accept(self.carol_client, code).status_code, 200)
+        self.assertEqual(self.accept(self.bob_client, code).data['code'], 'used')
+        self.assertEqual(self.bob_client.get(PREVIEW, {'code': code}).data['code'], 'used')
+
+        expired = self.invite(phone='+8801722222222').data['code']
+        Invitation.objects.filter(phone='+8801722222222').update(expires_at=timezone.now())
+        self.assertEqual(self.accept(self.bob_client, expired).data['code'], 'expired')
+
+        cancelled = self.invite(phone='+8801733333333').data
+        self.assertEqual(self.alice_client.delete(f'{self.url}{cancelled["id"]}/').status_code, 204)
+        self.assertEqual(self.accept(self.bob_client, cancelled['code']).data['code'], 'used')
+        self.assertEqual(self.alice_client.delete(f'{self.url}{cancelled["id"]}/').status_code, 400)
+
+        self.assertEqual(self.accept(self.bob_client, 'ABCDEFGHJK').data['code'], 'invalid')
+        self.assertEqual(self.accept(self.bob_client, '').status_code, 400)
+
+    def test_cancelling_needs_owner_or_admin_of_that_business(self):
+        invitation = self.invite(phone='+8801712345678').data
+        Membership.objects.create(workspace=self.shop, user=self.carol, role=Membership.ROLE_STAFF)
+        self.assertEqual(self.carol_client.delete(f'{self.url}{invitation["id"]}/').status_code, 403)
+        self.assertEqual(self.bob_client.delete(f'{self.url}{invitation["id"]}/').status_code, 404)
+        self.assertEqual(self.alice_client.delete(f'{self.url}not-an-id/').status_code, 400)
+
+    def test_inviting_again_replaces_the_earlier_code(self):
+        first = self.invite(email='bob@example.com').data['code']
+        second = self.invite(email='bob@example.com', role='viewer').data['code']
+        self.assertEqual(self.accept(self.bob_client, first).data['code'], 'used')
+        self.assertEqual(self.accept(self.bob_client, second).data['role'], 'viewer')
+        listed = self.alice_client.get(self.url)
+        self.assertEqual((listed.status_code, listed.data), (200, []))
+
+    def test_a_member_cannot_accept_again(self):
+        Membership.objects.create(workspace=self.shop, user=self.carol, role=Membership.ROLE_STAFF)
+        code = self.invite(phone='+8801712345678').data['code']
+        self.assertEqual(self.accept(self.carol_client, code).data['code'], 'already_member')
+
+    def test_the_list_shows_invitations_still_waiting(self):
+        self.invite(email='bob@example.com')
+        self.invite(phone='+8801712345678')
+        Invitation.objects.filter(phone='+8801712345678').update(expires_at=timezone.now())
+        listed = self.alice_client.get(self.url).data
+        self.assertEqual([(row['email'], row['status']) for row in listed], [('bob@example.com', 'pending')])
+        self.assertNotIn('code', listed[0])
+
+    def test_free_has_no_seats_to_invite_to(self):
+        stall = create_workspace(owner=self.bob, name='Stall')
+        response = self.bob_client.post(f'{WORKSPACES}{stall.id}/invitations/', {'email': 'carol@example.com'}, format='json')
+        self.assertEqual(response.status_code, 402, response.data)
+        self.assertEqual((response.data['feature'], response.data['upgrade_to']), ('team.seats', 'business'))
+        self.assertFalse(Invitation.objects.exists())
+        self.assertEqual(len(mail.outbox), 0)
+
+    def test_invitations_waiting_hold_seats(self):
+        set_limit(self.alice, F.TEAM_SEATS, 2)
+        Membership.objects.create(workspace=self.shop, user=self.carol, role=Membership.ROLE_STAFF)
+        self.assertEqual(self.invite(email='bob@example.com').status_code, 201)
+        self.assertEqual(self.invite(phone='+8801712345678').status_code, 402)
+        # Inviting the same person again takes no second seat
+        self.assertEqual(self.invite(email='bob@example.com').status_code, 201)
+
+    def test_accepting_is_refused_when_the_seats_were_taken_since(self):
+        code = self.invite(email='bob@example.com').data['code']
+        set_limit(self.alice, F.TEAM_SEATS, 1)
+        Membership.objects.create(workspace=self.shop, user=self.carol, role=Membership.ROLE_STAFF)
+        response = self.accept(self.bob_client, code)
+        self.assertEqual((response.status_code, response.data['feature']), (402, 'team.seats'))
+        self.assertFalse(Membership.objects.filter(workspace=self.shop, user=self.bob).exists())
+        self.assertEqual(Invitation.objects.get().status, 'pending')
+
+    def test_codes_cannot_be_guessed_quickly(self):
+        cache.clear()
+        statuses = [self.accept(self.bob_client, 'ABCDEFGHJK').status_code for _ in range(21)]
+        self.assertEqual((statuses[0], statuses[-1]), (400, 429))
+        cache.clear()

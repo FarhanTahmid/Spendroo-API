@@ -281,6 +281,8 @@ REST_FRAMEWORK = {
         'username_check': '60/minute',
         'profile_sensitive': '10/hour',
         'push_test': '10/hour',
+        # Low, so invitation codes cannot be guessed
+        'invitation_code': '20/hour',
         # Low, so promo codes cannot be guessed
         'promo_redeem': '10/hour',
         'billing_keep': '30/hour',
