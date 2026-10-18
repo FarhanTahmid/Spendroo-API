@@ -26,10 +26,12 @@ class WorkspaceSerializer(serializers.ModelSerializer):
 
 class MembershipSerializer(serializers.ModelSerializer):
     user_email = serializers.EmailField(source='user.email', read_only=True)
+    #: The member's own name, empty when they have not given one
+    user_name = serializers.CharField(source='user.full_name', read_only=True)
 
     class Meta:
         model = Membership
-        fields = ['id', 'user', 'user_email', 'role', 'created_at']
+        fields = ['id', 'user', 'user_email', 'user_name', 'role', 'created_at']
         read_only_fields = fields
 
 
@@ -89,3 +91,14 @@ class InvitationPreviewSerializer(serializers.Serializer):
 
     def get_invited_by(self, obj) -> str:
         return obj.invited_by.full_name or obj.invited_by.email if obj.invited_by else ''
+
+
+class SeatsSerializer(serializers.Serializer):
+    """A business's team seats on its owner's plan. `limit` is null when unlimited."""
+    limit = serializers.IntegerField(allow_null=True)
+    unlimited = serializers.BooleanField()
+    used = serializers.IntegerField()
+    members = serializers.IntegerField()
+    pending = serializers.IntegerField()
+    enforced = serializers.BooleanField()
+    upgrade_to = serializers.CharField(allow_null=True)

@@ -10,7 +10,8 @@ from rest_framework.test import APIClient
 
 from audit.models import CRUDLog
 from billing.catalog.keys import F
-from billing.testing import grant_plan, set_limit
+from billing.models import BillingSettings
+from billing.testing import grant_plan, set_limit, set_mode
 from billing.tests.base import BillingTestCase, client_for
 
 from cashbook.models import CashBook, CashBookAdditionalMember, Entry
@@ -621,3 +622,55 @@ class OwnershipTransferTests(TeamTestCase):
         self.shop.refresh_from_db()
         self.assertEqual((self.shop.owner, self.role_of(self.owner), self.role_of(self.admin)), (self.alice, 'owner', 'admin'))
         self.assertFalse(self.audit('transfer_ownership').exists())
+
+
+class SeatTests(TeamTestCase):
+    """Bob, Carol and Dan take three of the five seats on Alice's Business plan."""
+
+    def seats(self, client, workspace=None):
+        return client.get(f'{WORKSPACES}{(workspace or self.shop).id}/seats/')
+
+    def test_counts_members_but_the_owner_and_invitations_waiting(self):
+        invitations.invite(self.shop, self.alice, 'staff', phone='+8801712345678')
+        response = self.seats(self.alice_client)
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            response.data,
+            {'limit': 5, 'unlimited': False, 'used': 4, 'members': 3, 'pending': 1, 'enforced': True, 'upgrade_to': None},
+        )
+
+    def test_every_member_sees_the_owners_plan_not_their_own(self):
+        # Bob, Carol and Dan are on Free, which has no seats
+        for client in (self.bob_client, self.carol_client, self.dan_client):
+            response = self.seats(client)
+            self.assertEqual((response.status_code, response.data['limit'], response.data['used']), (200, 5, 3))
+
+    def test_a_free_owner_has_none_and_is_pointed_at_business(self):
+        eve = User.objects.create_user(email='eve@example.com', password='pass-12345')
+        stall = create_workspace(owner=eve, name='Stall')
+        response = self.seats(client_for(eve), stall)
+        self.assertEqual((response.data['limit'], response.data['used'], response.data['upgrade_to']), (0, 0, 'business'))
+
+    def test_unlimited_and_not_enforced_are_said(self):
+        set_limit(self.alice, F.TEAM_SEATS, None)
+        response = self.seats(self.alice_client)
+        self.assertEqual((response.data['limit'], response.data['unlimited']), (None, True))
+        set_mode(BillingSettings.MODE_LOG_ONLY)
+        self.assertFalse(self.seats(self.alice_client).data['enforced'])
+
+    def test_only_members_of_a_real_business(self):
+        eve = User.objects.create_user(email='eve@example.com', password='pass-12345')
+        self.assertEqual(self.seats(client_for(eve)).status_code, 404)
+        response = self.seats(self.alice_client, self.personal)
+        self.assertEqual((response.status_code, response.data['code']), (400, 'not_a_business'))
+
+
+class MemberListTests(TeamTestCase):
+    def test_every_member_sees_everyone_with_their_name(self):
+        User.objects.filter(pk=self.carol.pk).update(first_name='Carol', last_name='Khan')
+        response = self.dan_client.get(f'{WORKSPACES}{self.shop.id}/members/')
+        self.assertEqual(response.status_code, 200)
+        rows = {row['user_email']: row for row in response.data}
+        self.assertEqual(set(rows), {'alice@example.com', 'bob@example.com', 'carol@example.com', 'dan@example.com'})
+        self.assertEqual((rows['carol@example.com']['user_name'], rows['carol@example.com']['role']), ('Carol Khan', 'staff'))
+        self.assertEqual((rows['alice@example.com']['user_name'], rows['alice@example.com']['role']), ('', 'owner'))

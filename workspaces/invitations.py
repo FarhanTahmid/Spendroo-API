@@ -21,6 +21,7 @@ from django.utils import timezone
 from rest_framework.exceptions import PermissionDenied
 
 from billing import gates
+from billing.models import BillingSettings
 from billing.catalog.keys import F
 from .errors import refuse
 from .models import Invitation, Membership, Workspace
@@ -47,6 +48,29 @@ def hash_code(code):
 def pending(workspace):
     """Invitations of the workspace that can still be taken up."""
     return workspace.invitations.filter(accepted_at__isnull=True, revoked_at__isnull=True, expires_at__gt=timezone.now())
+
+
+def seats(workspace):
+    """
+    The business's team seats on its owner's plan: members other than the
+    owner, plus the invitations still waiting, out of the limit. For the app's
+    seat meter, so an admin sees the owner's numbers and not their own plan's.
+    """
+    if workspace.kind != Workspace.KIND_BUSINESS or workspace.is_demo:
+        refuse('not_a_business', 'Only a business has team seats.')
+    entitlements = gates.entitlements_for(workspace)
+    limit = entitlements.limit_of(F.TEAM_SEATS)
+    members = workspace.memberships.exclude(role=Membership.ROLE_OWNER).count()
+    waiting = pending(workspace).count()
+    return {
+        'limit': limit,
+        'unlimited': limit is None,
+        'used': members + waiting,
+        'members': members,
+        'pending': waiting,
+        'enforced': entitlements.settings.enforcement_mode == BillingSettings.MODE_ENFORCE,
+        'upgrade_to': gates.upgrade_target(entitlements.plan, F.TEAM_SEATS),
+    }
 
 
 def _check_can_invite(workspace, inviter, role):

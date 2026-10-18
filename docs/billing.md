@@ -106,6 +106,12 @@ A synced change the plan does not allow comes back rejected with code
 `plan_limit` and `error.meta` (`feature`, `reason`, `limit`, `current`,
 `plan`, `upgrade_to`).
 
+Entitlements are the caller's own plan, but a business's team seats come
+from its owner's. `GET /api/v1/workspaces/<id>/seats/` gives any member the
+owner's numbers for the seat meter: `limit` (null when unlimited), `used`
+(members other than the owner plus invitations waiting), `members`,
+`pending`, `enforced` and `upgrade_to`.
+
 ## Commands
 
 ```

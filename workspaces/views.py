@@ -22,6 +22,7 @@ from .serializers import (
     MembershipRoleSerializer,
     MembershipSerializer,
     OwnershipTransferSerializer,
+    SeatsSerializer,
     WorkspaceSerializer,
 )
 from .services import create_demo_business, create_workspace, workspaces_for
@@ -102,6 +103,15 @@ class WorkspaceViewSet(TenantScopedMixin,
         workspace = self.get_object()
         memberships = workspace.memberships.select_related('user')
         return Response(MembershipSerializer(memberships, many=True).data)
+
+    @extend_schema(responses=SeatsSerializer)
+    @action(detail=True, methods=['get'])
+    def seats(self, request, pk=None):
+        """
+        Team seats on the owner's plan: members other than the owner plus
+        invitations waiting, out of the limit. Any member may ask.
+        """
+        return Response(SeatsSerializer(invitations.seats(self.get_object())).data)
 
     @extend_schema(
         methods=['patch'], request=MembershipRoleSerializer, responses=MembershipSerializer,
