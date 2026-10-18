@@ -1,27 +1,27 @@
-from rest_framework import viewsets, status, filters
+from drf_spectacular.types import OpenApiTypes
+from drf_spectacular.utils import OpenApiParameter, extend_schema
+from rest_framework import serializers, viewsets, status, filters
 from rest_framework.decorators import action
 from rest_framework.response import Response
-from rest_framework.exceptions import APIException
+from rest_framework.exceptions import APIException, PermissionDenied
 from django.http import Http404
 from rest_framework.permissions import IsAuthenticated
 from django.shortcuts import get_object_or_404
 from django.db import transaction
 from django.core.exceptions import ValidationError
 
-from ..models import (
-    CashBook, CashBookAdditionalMember
-)
+from ..models import CashBook
 from ..serializers import (
     CashBookListSerializer, CashBookDetailSerializer, CashBookCreateUpdateSerializer,
-    CashBookAdditionalMemberSerializer
+    CashBookAccessSerializer, CashBookAdditionalMemberSerializer, CashBookGrantRoleSerializer, CashBookGrantSerializer,
 )
+from .. import grants
 from ..permissions import IsCashBookOwnerOrMember, IsCashBookOwner
 from audit.utils.audit_utils import AuditLogMixin
 from billing import gates
 from billing.api.guards import CashbookPlanGuard
 from billing.catalog.keys import F
 from workspaces.tenancy import TenantScopedMixin
-from workspaces.models import Membership
 
 
 class CashBookHomeViewSet(CashbookPlanGuard, TenantScopedMixin, viewsets.ModelViewSet, AuditLogMixin):
@@ -332,158 +332,67 @@ class CashBookHomeViewSet(CashbookPlanGuard, TenantScopedMixin, viewsets.ModelVi
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR
             )
     
+    @extend_schema(responses=CashBookAccessSerializer(many=True))
+    @action(detail=True, methods=['get'])
+    def access(self, request, pk=None):
+        """Every staff member of the business, with their access to this book if they have any."""
+        cashbook = self.get_object()
+        if not cashbook.has_permission(request.user, 'admin'):
+            raise PermissionDenied("Only someone who manages this cashbook can see who has access.")
+        rows = [{'membership': m, 'grant': g} for m, g in grants.staff(cashbook)]
+        return Response(CashBookAccessSerializer(rows, many=True).data)
+
+    @extend_schema(request=CashBookGrantSerializer, responses={201: CashBookAdditionalMemberSerializer})
     @action(detail=True, methods=['post'])
     def add_member(self, request, pk=None):
-        """Add a member to cashbook with validation"""
-        try:
-            cashbook = self.get_object()
-            
-            # Check permission
-            if not cashbook.has_permission(request.user, 'admin'):
-                return Response(
-                    {'detail': 'Only the owner or an admin can add members.'},
-                    status=status.HTTP_403_FORBIDDEN
-                )
-            
-            serializer = CashBookAdditionalMemberSerializer(data=request.data)
-            if serializer.is_valid():
-                # Check if member already exists
-                member_id = request.data.get('member')
-                if CashBookAdditionalMember.objects.filter(
-                    cashbook=cashbook, 
-                    member_id=member_id
-                ).exists():
-                    return Response(
-                        {'detail': 'This user is already a member of this cashbook.'},
-                        status=status.HTTP_400_BAD_REQUEST
-                    )
-                
-                with transaction.atomic():
-                    grant = serializer.save(cashbook=cashbook, added_by=request.user)
-                    # A per-book grant implies staff membership of the workspace
-                    if not cashbook.workspace.memberships.filter(user=grant.member).exists():
-                        # Someone new to the workspace takes a seat on the owner's plan
-                        gates.check_limit(cashbook.workspace, F.TEAM_SEATS)
-                        Membership.objects.create(
-                            workspace=cashbook.workspace, user=grant.member,
-                            role=Membership.ROLE_STAFF, added_by=request.user
-                        )
-                return Response(
-                    {
-                        'message': 'Member added successfully.',
-                        'data': serializer.data
-                    },
-                    status=status.HTTP_201_CREATED
-                )
-            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
-            
-        except CashBook.DoesNotExist:
-            return Response(
-                {'detail': 'Cashbook not found or you do not have access.'},
-                status=status.HTTP_404_NOT_FOUND
+        """Give a staff member of the business access to this book."""
+        cashbook = self.get_object()
+        serializer = CashBookGrantSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        membership = get_object_or_404(
+            cashbook.workspace.memberships.select_related('user'), user_id=serializer.validated_data['member'],
+        )
+        grant = grants.grant(cashbook, request.user, membership, serializer.validated_data['role'])
+        self.log_action(
+            request, 'CREATE', 'CashBookAdditionalMember', grant.id,
+            changes={'cashbook': cashbook.id, 'user': membership.user.email, 'role': grant.role},
+            operation='grant_cashbook_access',
+        )
+        return Response(CashBookAdditionalMemberSerializer(grant).data, status=status.HTTP_201_CREATED)
+
+    @extend_schema(
+        methods=['patch'], request=CashBookGrantRoleSerializer, responses=CashBookAdditionalMemberSerializer,
+        parameters=[OpenApiParameter('member_id', OpenApiTypes.UUID, OpenApiParameter.PATH)],
+    )
+    @extend_schema(
+        methods=['delete'], request=None, responses={204: None},
+        parameters=[OpenApiParameter('member_id', OpenApiTypes.UUID, OpenApiParameter.PATH)],
+    )
+    @action(detail=True, methods=['patch', 'delete'], url_path=r'members/(?P<member_id>[^/.]+)')
+    def manage_member(self, request, pk=None, member_id=None):
+        """PATCH changes a staff member's access to this book; DELETE takes it away. member_id is the grant's id."""
+        cashbook = self.get_object()
+        member_id = serializers.UUIDField().run_validation(member_id)
+        grant = get_object_or_404(
+            cashbook.cashbookadditionalmember_set.select_related('member', 'cashbook__workspace'), pk=member_id,
+        )
+        if request.method == 'DELETE':
+            grants.revoke(grant, request.user)
+            self.log_action(
+                request, 'DELETE', 'CashBookAdditionalMember', grant.id,
+                changes={'cashbook': cashbook.id, 'user': grant.member.email, 'role': grant.role},
+                operation='revoke_cashbook_access',
             )
-        except (Http404, APIException):
-            raise
-        except Exception as e:
-            return Response(
-                {'detail': 'Failed to add member. Please try again.'},
-                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            return Response(status=status.HTTP_204_NO_CONTENT)
+        serializer = CashBookGrantRoleSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        role = serializer.validated_data['role']
+        old = grants.change(grant, request.user, role)
+        if old != role:
+            self.log_action(
+                request, 'UPDATE', 'CashBookAdditionalMember', grant.id,
+                changes={'cashbook': cashbook.id, 'user': grant.member.email, 'role': {'old': old, 'new': role}},
+                operation='change_cashbook_access',
             )
-    
-    @action(detail=True, methods=['patch'], url_path='members/(?P<member_id>[^/.]+)')
-    def update_member_role(self, request, pk=None, member_id=None):
-        """Update member role with validation"""
-        try:
-            cashbook = self.get_object()
-            
-            # Check permission
-            if not cashbook.has_permission(request.user, 'admin'):
-                return Response(
-                    {'detail': 'Only the owner or an admin can update member roles.'},
-                    status=status.HTTP_403_FORBIDDEN
-                )
-            
-            member = get_object_or_404(CashBookAdditionalMember, id=member_id, cashbook=cashbook)
-            
-            new_role = request.data.get('role')
-            if not new_role:
-                return Response(
-                    {'detail': 'Role is required.'},
-                    status=status.HTTP_400_BAD_REQUEST
-                )
-            
-            if new_role not in ['viewer', 'editor', 'admin']:
-                return Response(
-                    {'detail': 'Invalid role. Choose from: viewer, editor, admin.'},
-                    status=status.HTTP_400_BAD_REQUEST
-                )
-            
-            member.role = new_role
-            member.save()
-            
-            serializer = CashBookAdditionalMemberSerializer(member)
-            return Response(
-                {
-                    'message': 'Member role updated successfully.',
-                    'data': serializer.data
-                },
-                status=status.HTTP_200_OK
-            )
-            
-        except CashBook.DoesNotExist:
-            return Response(
-                {'detail': 'Cashbook not found or you do not have access.'},
-                status=status.HTTP_404_NOT_FOUND
-            )
-        except CashBookAdditionalMember.DoesNotExist:
-            return Response(
-                {'detail': 'Member not found in this cashbook.'},
-                status=status.HTTP_404_NOT_FOUND
-            )
-        except (Http404, APIException):
-            raise
-        except Exception as e:
-            return Response(
-                {'detail': 'Failed to update member role. Please try again.'},
-                status=status.HTTP_500_INTERNAL_SERVER_ERROR
-            )
-    
-    @action(detail=True, methods=['delete'], url_path='members/(?P<member_id>[^/.]+)')
-    def remove_member(self, request, pk=None, member_id=None):
-        """Remove a member from cashbook with validation"""
-        try:
-            cashbook = self.get_object()
-            
-            # Check permission
-            if not cashbook.has_permission(request.user, 'admin'):
-                return Response(
-                    {'detail': 'Only the owner or an admin can remove members.'},
-                    status=status.HTTP_403_FORBIDDEN
-                )
-            
-            member = get_object_or_404(CashBookAdditionalMember, id=member_id, cashbook=cashbook)
-            member_name = str(member.member)
-            member.soft_delete()
-            
-            return Response(
-                {'message': f'Member "{member_name}" removed successfully.'},
-                status=status.HTTP_200_OK
-            )
-            
-        except CashBook.DoesNotExist:
-            return Response(
-                {'detail': 'Cashbook not found or you do not have access.'},
-                status=status.HTTP_404_NOT_FOUND
-            )
-        except CashBookAdditionalMember.DoesNotExist:
-            return Response(
-                {'detail': 'Member not found in this cashbook.'},
-                status=status.HTTP_404_NOT_FOUND
-            )
-        except (Http404, APIException):
-            raise
-        except Exception as e:
-            return Response(
-                {'detail': 'Failed to remove member. Please try again.'},
-                status=status.HTTP_500_INTERNAL_SERVER_ERROR
-            )
+        grant.refresh_from_db()
+        return Response(CashBookAdditionalMemberSerializer(grant).data)

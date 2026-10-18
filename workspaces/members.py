@@ -56,12 +56,18 @@ def change_role(workspace, actor, membership, role):
     if role == Membership.ROLE_ADMIN and actor.pk != workspace.owner_id:
         raise PermissionDenied('Only the owner can make someone an admin.')
 
+    # Imported here: cashbook depends on workspaces, not the other way round
+    from cashbook.models import CashBookAdditionalMember
+
     with transaction.atomic():
         membership = _locked(membership)
         old = membership.role
         if old != role:
             membership.role = role
             membership.save(update_fields=['role'])
+            # Grants to single books are for staff; anyone else reaches books through their role
+            if old == Membership.ROLE_STAFF:
+                tombstone(CashBookAdditionalMember.objects.filter(workspace=workspace, member_id=membership.user_id))
     return old
 
 

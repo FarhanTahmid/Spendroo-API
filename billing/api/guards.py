@@ -27,5 +27,5 @@ class CashbookPlanGuard:
         except (ValidationError, ValueError, TypeError):
             cashbook = None  # not an id: the view answers with its own 404
         # Someone who may not write here anyway gets the view's own 403 or 404, not a plan message
-        if cashbook is not None and cashbook.has_permission(request.user, 'edit'):
+        if cashbook is not None and cashbook.has_permission(request.user, 'add'):
             gates.assert_cashbook_writable(cashbook, request.user)

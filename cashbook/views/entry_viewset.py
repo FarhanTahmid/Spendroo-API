@@ -143,8 +143,8 @@ class EntryViewSet(CashbookPlanGuard, TenantScopedMixin, viewsets.ModelViewSet):
         cashbook_id = self.kwargs.get('cashbook_pk')
         cashbook = get_object_or_404(CashBook, id=cashbook_id)
         
-        # Check edit permission
-        if not cashbook.has_permission(request.user, 'edit'):
+        # Adding needs less than changing: a contributor may add but not edit
+        if not cashbook.has_permission(request.user, 'add'):
             return Response(
                 {'error': 'You do not have permission to create entries in this cashbook'},
                 status=status.HTTP_403_FORBIDDEN

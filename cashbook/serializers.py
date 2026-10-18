@@ -20,6 +20,25 @@ class CashBookAdditionalMemberSerializer(serializers.ModelSerializer):
         read_only_fields = ['id', 'created_at', 'added_by']
 
 
+class CashBookGrantSerializer(serializers.Serializer):
+    """The staff member to let into a book, and how far."""
+    member = serializers.UUIDField()
+    role = serializers.ChoiceField(choices=CashBookAdditionalMember.ROLE_CHOICES)
+
+
+class CashBookGrantRoleSerializer(serializers.Serializer):
+    role = serializers.ChoiceField(choices=CashBookAdditionalMember.ROLE_CHOICES)
+
+
+class CashBookAccessSerializer(serializers.Serializer):
+    """A staff member of the book's business, and their grant to it if they have one."""
+    membership_id = serializers.UUIDField(source='membership.id')
+    user = serializers.UUIDField(source='membership.user_id')
+    user_email = serializers.EmailField(source='membership.user.email')
+    grant_id = serializers.UUIDField(source='grant.id', default=None)
+    role = serializers.CharField(source='grant.role', default=None)
+
+
 class EntryCategorySerializer(serializers.ModelSerializer):
     class Meta:
         model = EntryCategory

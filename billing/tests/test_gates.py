@@ -255,28 +255,15 @@ class SeatLimitTests(BillingTestCase):
         super().setUp()
         self.book = CashBook.objects.create(workspace=self.shop, book_name='Till')
 
-    def add(self, user):
-        return self.alice_client.post(f'{BOOKS}{self.book.id}/add_member/', {'member': str(user.id), 'role': 'editor'})
-
-    def test_free_has_no_seats_and_a_refused_member_gets_no_access(self):
-        response = self.add(self.bob)
-        self.assertEqual(response.status_code, 402, response.data)
-        self.assertEqual((response.data['feature'], response.data['upgrade_to']), ('team.seats', 'business'))
+    def test_a_cashbook_grant_never_takes_a_seat(self):
+        # Seats are taken by invitations (workspaces/tests.py); a grant only reaches people already on the team
+        grant_plan(self.alice, 'business')
+        response = self.alice_client.post(
+            f'{BOOKS}{self.book.id}/add_member/', {'member': str(self.bob.id), 'role': 'editor'},
+        )
+        self.assertEqual(response.status_code, 404, response.data)
         self.assertFalse(CashBookAdditionalMember.objects.filter(member=self.bob).exists())
         self.assertFalse(Membership.objects.filter(workspace=self.shop, user=self.bob).exists())
-
-    def test_business_has_five_and_one_person_on_two_books_takes_one(self):
-        grant_plan(self.alice, 'business')
-        people = [User.objects.create_user(email=f'staff{n}@example.com', password='pass-12345') for n in range(6)]
-        for person in people[:5]:
-            self.assertEqual(self.add(person).status_code, 201)
-        self.assertEqual(self.add(people[5]).status_code, 402)
-
-        second = CashBook.objects.create(workspace=self.shop, book_name='Safe')
-        response = self.alice_client.post(
-            f'{BOOKS}{second.id}/add_member/', {'member': str(people[0].id), 'role': 'viewer'},
-        )
-        self.assertEqual(response.status_code, 201, response.data)
 
 
 class CustomFieldTests(BillingTestCase):

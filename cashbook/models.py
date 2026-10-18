@@ -87,39 +87,50 @@ class CashBook(WorkspaceOwnedModel):
         return cash_in - cash_out
 
     def has_permission(self, user, permission_type='view'):
-        """Check if user has permission for this cashbook"""
+        """
+        Whether the user may 'view' this book, 'add' entries to it, 'edit' its
+        entries and the book, or 'admin' it (categories, payment methods and
+        who has access). Managers may do everything and viewers only look;
+        staff get what their grant to this book says.
+        """
         workspace_role = self.workspace.role_of(user)
         if workspace_role in Membership.MANAGER_ROLES:
             return True
-        if workspace_role == Membership.ROLE_VIEWER and permission_type == 'view':
-            return True
-
-        member = self.cashbookadditionalmember_set.filter(member=user).first()
-        if not member:
+        if workspace_role == Membership.ROLE_VIEWER:
+            return permission_type == 'view'
+        if workspace_role != Membership.ROLE_STAFF:
             return False
 
-        if permission_type == 'view':
-            return True
-        elif permission_type == 'edit':
-            return member.role in ['editor', 'admin']
-        elif permission_type == 'admin':
-            return member.role == 'admin'
-
-        return False
+        grant = self.cashbookadditionalmember_set.filter(member=user).first()
+        if not grant:
+            return False
+        return permission_type in CashBookAdditionalMember.PERMISSIONS.get(grant.role, ())
 
 
 @pghistory.track()
 class CashBookAdditionalMember(WorkspaceOwnedModel):
     """Per-book grant for workspace staff."""
+    ROLE_VIEWER = 'viewer'
+    ROLE_CONTRIBUTOR = 'contributor'  # adds entries, never changes them
+    ROLE_EDITOR = 'editor'
+    ROLE_ADMIN = 'admin'
     ROLE_CHOICES = [
-        ('viewer', 'Viewer'),
-        ('editor', 'Editor'),
-        ('admin', 'Admin'),
+        (ROLE_VIEWER, 'Viewer'),
+        (ROLE_CONTRIBUTOR, 'Contributor'),
+        (ROLE_EDITOR, 'Editor'),
+        (ROLE_ADMIN, 'Admin'),
     ]
+    #: what each grant allows, as CashBook.has_permission is asked
+    PERMISSIONS = {
+        ROLE_VIEWER: ('view',),
+        ROLE_CONTRIBUTOR: ('view', 'add'),
+        ROLE_EDITOR: ('view', 'add', 'edit'),
+        ROLE_ADMIN: ('view', 'add', 'edit', 'admin'),
+    }
 
     cashbook = models.ForeignKey(CashBook, on_delete=models.CASCADE, null=False)
     member = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, null=False, blank=False)
-    role = models.CharField(max_length=10, choices=ROLE_CHOICES, default='viewer')
+    role = models.CharField(max_length=12, choices=ROLE_CHOICES, default=ROLE_VIEWER)
 
     added_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, related_name='members_added')
 

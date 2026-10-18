@@ -11,7 +11,7 @@ class CashBookAccessPermission(permissions.BasePermission):
     Custom permission to check if user has access to a cashbook.
     - Workspace owner and admins have full access
     - Workspace viewers can read
-    - Staff have access based on their per-book role (viewer, editor, admin)
+    - Staff have access based on their per-book role (viewer, contributor, editor, admin)
     """
 
     def has_permission(self, request, view):

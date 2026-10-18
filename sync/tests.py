@@ -421,6 +421,27 @@ class PushPermissionTests(SyncTestCase):
         self.assertEqual([r['error']['code'] for r in results[1:]], ['forbidden'] * 5)
 
 
+    def test_a_contributor_adds_entries_but_never_changes_them(self):
+        book, entry, _ = self.push_book_with_entry()
+        Membership.objects.create(workspace=self.shop, user=self.bob, role=Membership.ROLE_STAFF)
+        CashBookAdditionalMember.objects.create(cashbook_id=book['row_id'], member=self.bob, role='contributor')
+
+        added = self.upsert('entries', cashbook_id=book['row_id'], entry_type='cash_in', amount_minor=100,
+                            entry_date='2026-10-01')
+        results = self.push(self.bob_client, self.shop, added)
+        self.assertEqual(results[0]['status'], 'applied')
+
+        results = self.push(
+            self.bob_client, self.shop,
+            self.upsert('entries', added['row_id'], amount_minor=1),     # not even their own
+            self.upsert('entries', entry['row_id'], amount_minor=1),
+            self.delete('entries', entry['row_id']),
+            self.upsert('cashbooks', book['row_id'], book_name='Mine'),
+        )
+        self.assertEqual([r['status'] for r in results], ['rejected'] * 4)
+        self.assertEqual({r['error']['code'] for r in results}, {'forbidden'})
+
+
 class PullTests(SyncTestCase):
     def test_pull_returns_changes_after_cursor_including_tombstones(self):
         book, entry, _ = self.push_book_with_entry()

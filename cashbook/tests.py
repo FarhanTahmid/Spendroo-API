@@ -6,8 +6,9 @@ from rest_framework.test import APIClient
 
 from billing.testing import grant_plan
 from workspaces.models import Membership
+from workspaces.tests import TeamTestCase
 from workspaces.services import create_workspace, get_personal_workspace
-from .models import CashBook, Entry, EntryCategory
+from .models import CashBook, CashBookAdditionalMember, Entry, EntryCategory
 from spendroo.money import format_money, to_major
 
 User = get_user_model()
@@ -207,6 +208,7 @@ class RoleTests(CashBookTestCase):
         self.safe = self.create_book(self.alice_client, book_name='Safe', workspace=str(self.shop.id))
 
     def test_staff_sees_only_granted_books(self):
+        Membership.objects.create(workspace=self.shop, user=self.bob, role=Membership.ROLE_STAFF)
         response = self.alice_client.post(
             f'{BOOKS}{self.till.id}/add_member/', {'member': str(self.bob.id), 'role': 'editor'}
         )
@@ -222,10 +224,11 @@ class RoleTests(CashBookTestCase):
         self.assertEqual(self.bob_client.delete(f'{BOOKS}{self.till.id}/').status_code, 403)
 
     def test_removed_staff_loses_access(self):
+        Membership.objects.create(workspace=self.shop, user=self.bob, role=Membership.ROLE_STAFF)
         grant_id = self.alice_client.post(
             f'{BOOKS}{self.till.id}/add_member/', {'member': str(self.bob.id), 'role': 'editor'}
-        ).data['data']['id']
-        self.assertEqual(self.alice_client.delete(f'{BOOKS}{self.till.id}/members/{grant_id}/').status_code, 200)
+        ).data['id']
+        self.assertEqual(self.alice_client.delete(f'{BOOKS}{self.till.id}/members/{grant_id}/').status_code, 204)
         self.assertEqual(self.bob_client.get(BOOKS).data['results'], [])
         self.assertIn(self.bob_client.get(f'{BOOKS}{self.till.id}/entries/').status_code, (403, 404))
 
@@ -247,6 +250,149 @@ class RoleTests(CashBookTestCase):
         self.create_book(self.alice_client, book_name='Home')
         response = self.alice_client.get(f'{BOOKS}?workspace={self.shop.id}')
         self.assertEqual(sorted(b['book_name'] for b in response.data['results']), ['Safe', 'Till'])
+
+
+class GrantTests(TeamTestCase):
+    """Alice owns Shop; Bob is an admin, Carol and Erin staff, Dan a viewer. Carol works the till."""
+
+    def setUp(self):
+        super().setUp()
+        self.erin = User.objects.create_user(email='erin@example.com', password='pass-12345')
+        self.erin_client = client_for(self.erin)
+        Membership.objects.create(workspace=self.shop, user=self.erin, role=Membership.ROLE_STAFF)
+        self.till = CashBook.objects.create(workspace=self.shop, book_name='Till')
+        self.safe = CashBook.objects.create(workspace=self.shop, book_name='Safe')
+
+    def grant(self, client, user, role, book=None):
+        return client.post(f'{BOOKS}{(book or self.till).id}/add_member/', {'member': str(user.id), 'role': role})
+
+    def grant_url(self, grant_id, book=None):
+        return f'{BOOKS}{(book or self.till).id}/members/{grant_id}/'
+
+    def add_entry(self, client, book=None):
+        payload = {'entry_type': 'cash_in', 'amount_minor': 10000, 'entry_date': '2026-10-01'}
+        return client.post(f'{BOOKS}{(book or self.till).id}/entries/', payload)
+
+    def books_of(self, client):
+        return [b['book_name'] for b in client.get(BOOKS).data['results']]
+
+    def test_a_contributor_adds_entries_but_never_changes_them(self):
+        response = self.grant(self.alice_client, self.carol, 'contributor')
+        self.assertEqual((response.status_code, response.data['role']), (201, 'contributor'))
+        self.assertEqual(self.books_of(self.carol_client), ['Till'])
+
+        created = self.add_entry(self.carol_client)
+        self.assertEqual(created.status_code, 201, created.data)
+        entry = f'{BOOKS}{self.till.id}/entries/{created.data["id"]}/'
+        self.assertEqual(self.carol_client.get(entry).status_code, 200)
+        self.assertEqual(self.carol_client.patch(entry, {'amount_minor': 1}).status_code, 403)
+        self.assertEqual(self.carol_client.delete(entry).status_code, 403)
+        self.assertEqual(self.carol_client.patch(f'{BOOKS}{self.till.id}/', {'book_name': 'Mine'}).status_code, 403)
+        self.assertIn(self.add_entry(self.carol_client, self.safe).status_code, (403, 404))
+
+    def test_each_level_allows_what_it_says(self):
+        expected = {
+            'viewer': ['view'],
+            'contributor': ['view', 'add'],
+            'editor': ['view', 'add', 'edit'],
+            'admin': ['view', 'add', 'edit', 'admin'],
+        }
+        grant_id = self.grant(self.alice_client, self.carol, 'viewer').data['id']
+        for role, allowed in expected.items():
+            self.alice_client.patch(self.grant_url(grant_id), {'role': role})
+            self.assertEqual(
+                [p for p in ('view', 'add', 'edit', 'admin') if self.till.has_permission(self.carol, p)], allowed, role,
+            )
+        self.assertFalse(self.safe.has_permission(self.carol, 'view'))
+
+    def test_access_lists_every_staff_member_with_their_grant(self):
+        self.grant(self.alice_client, self.carol, 'editor')
+        response = self.alice_client.get(f'{BOOKS}{self.till.id}/access/')
+        self.assertEqual(response.status_code, 200)
+        rows = {row['user_email']: row for row in response.data}
+        self.assertEqual(sorted(rows), ['carol@example.com', 'erin@example.com'])
+        self.assertEqual(rows['carol@example.com']['role'], 'editor')
+        self.assertIsNotNone(rows['carol@example.com']['grant_id'])
+        self.assertEqual(rows['carol@example.com']['membership_id'], str(self.staff.id))
+        self.assertEqual((rows['erin@example.com']['role'], rows['erin@example.com']['grant_id']), (None, None))
+        # Someone who doesn't manage the book can't see who else works on it
+        self.assertEqual(self.carol_client.get(f'{BOOKS}{self.till.id}/access/').status_code, 403)
+        self.assertEqual(self.dan_client.get(f'{BOOKS}{self.till.id}/access/').status_code, 403)
+        self.assertEqual(self.bob_client.get(f'{BOOKS}{self.till.id}/access/').status_code, 200)
+
+    def test_only_staff_already_on_the_team_get_a_grant(self):
+        stranger = User.objects.create_user(email='stranger@example.com', password='pass-12345')
+        self.assertEqual(self.grant(self.alice_client, stranger, 'viewer').status_code, 404)
+        self.assertFalse(Membership.all_objects.filter(workspace=self.shop, user=stranger).exists())
+        for user in (self.bob, self.dan):
+            response = self.grant(self.alice_client, user, 'viewer')
+            self.assertEqual((response.status_code, response.data['code']), (400, 'not_staff'))
+        self.assertEqual(self.grant(self.alice_client, self.carol, 'owner').status_code, 400)
+
+    def test_a_second_grant_to_the_same_book_is_refused(self):
+        self.grant(self.alice_client, self.carol, 'viewer')
+        response = self.grant(self.alice_client, self.carol, 'editor')
+        self.assertEqual((response.status_code, response.data['code']), (400, 'already_granted'))
+
+    def test_only_a_business_has_grants(self):
+        home = CashBook.objects.create(workspace=self.personal, book_name='Home')
+        response = self.grant(self.alice_client, self.alice, 'viewer', book=home)
+        self.assertEqual((response.status_code, response.data['code']), (400, 'not_a_business'))
+
+    def test_staff_who_manage_a_book_grant_access_but_not_the_power_to_manage(self):
+        self.grant(self.alice_client, self.erin, 'admin')
+        response = self.grant(self.erin_client, self.carol, 'editor')
+        self.assertEqual(response.status_code, 201, response.data)
+        self.assertEqual(self.erin_client.patch(self.grant_url(response.data['id']), {'role': 'admin'}).status_code, 403)
+        self.assertEqual(self.erin_client.delete(self.grant_url(response.data['id'])).status_code, 204)
+        # Nor change their own access, nor reach a book they don't manage
+        own = CashBookAdditionalMember.objects.get(member=self.erin)
+        self.assertEqual(self.erin_client.patch(self.grant_url(own.id), {'role': 'viewer'}).status_code, 403)
+        self.assertIn(self.grant(self.erin_client, self.carol, 'viewer', book=self.safe).status_code, (403, 404))
+
+    def test_only_managers_take_away_the_power_to_manage(self):
+        self.grant(self.alice_client, self.erin, 'admin')
+        carol = self.grant(self.alice_client, self.carol, 'admin').data['id']
+        self.assertEqual(self.erin_client.patch(self.grant_url(carol), {'role': 'viewer'}).status_code, 403)
+        self.assertEqual(self.erin_client.delete(self.grant_url(carol)).status_code, 403)
+        self.assertEqual(self.bob_client.patch(self.grant_url(carol), {'role': 'viewer'}).status_code, 200)
+
+    def test_editors_and_viewers_cannot_grant(self):
+        self.grant(self.alice_client, self.carol, 'editor')
+        self.assertEqual(self.grant(self.carol_client, self.erin, 'viewer').status_code, 403)
+        self.assertEqual(self.grant(self.dan_client, self.erin, 'viewer').status_code, 403)
+        self.assertFalse(CashBookAdditionalMember.objects.filter(member=self.erin).exists())
+
+    def test_changes_and_revokes_are_audited(self):
+        grant_id = self.grant(self.alice_client, self.carol, 'viewer').data['id']
+        log = self.audit('grant_cashbook_access').get()
+        self.assertEqual((log.user, log.action, log.model_name, log.record_ids),
+                         (self.alice, 'CREATE', 'CashBookAdditionalMember', str(grant_id)))
+        self.assertEqual((log.changes['user'], log.changes['role']), ('carol@example.com', 'viewer'))
+
+        response = self.alice_client.patch(self.grant_url(grant_id), {'role': 'editor'})
+        self.assertEqual((response.status_code, response.data['role']), (200, 'editor'))
+        self.assertEqual(self.audit('change_cashbook_access').get().changes['role'], {'old': 'viewer', 'new': 'editor'})
+        self.alice_client.patch(self.grant_url(grant_id), {'role': 'editor'})
+        self.assertEqual(self.audit('change_cashbook_access').count(), 1)
+
+        self.assertEqual(self.alice_client.delete(self.grant_url(grant_id)).status_code, 204)
+        self.assertEqual(self.audit('revoke_cashbook_access').count(), 1)
+        self.assertEqual(self.books_of(self.carol_client), [])
+        self.assertEqual(self.alice_client.delete(self.grant_url(grant_id)).status_code, 404)
+
+    def test_a_viewer_with_a_grant_left_behind_still_only_reads(self):
+        CashBookAdditionalMember.objects.create(cashbook=self.till, member=self.dan, role='editor')
+        self.assertEqual(self.add_entry(self.dan_client).status_code, 403)
+        self.assertFalse(self.till.has_permission(self.dan, 'edit'))
+
+    def test_grants_go_when_staff_get_another_role(self):
+        self.grant(self.alice_client, self.carol, 'editor')
+        self.assertEqual(self.set_role(self.alice_client, self.staff, 'viewer').status_code, 200)
+        self.assertFalse(CashBookAdditionalMember.objects.filter(member=self.carol).exists())
+        # Made staff again, they start with nothing
+        self.set_role(self.alice_client, self.staff, 'staff')
+        self.assertEqual(self.books_of(self.carol_client), [])
 
 
 class EditHistoryTests(CashBookTestCase):

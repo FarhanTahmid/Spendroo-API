@@ -94,6 +94,8 @@ class CashBookTable(SyncTable):
 class CashBookChildTable(SyncTable):
     """Rows that hang off a cashbook and follow its per-book permissions."""
     required_permission = 'edit'
+    #: what creating a row needs, when less than changing one
+    create_permission = None
     # Read-only together with the book they belong to
     plan_gates = [Lock(F.BUSINESS_CASHBOOKS, target=lambda row: row.cashbook_id)]
 
@@ -104,7 +106,8 @@ class CashBookChildTable(SyncTable):
                                cashbook__cashbookadditionalmember__deleted_at__isnull=True)
 
     def can_write(self, user, role, obj, op):
-        return obj.cashbook.has_permission(user, self.required_permission)
+        permission = (op == 'create' and self.create_permission) or self.required_permission
+        return obj.cashbook.has_permission(user, permission)
 
 
 def accessible_cashbook_ids(user, role):
@@ -134,6 +137,8 @@ class EntryTable(CashBookChildTable):
     ]
     immutable = ['cashbook_id']
     read_only = ['currency', 'created_by_id']
+    # A contributor adds entries but never changes them
+    create_permission = 'add'
     references = {
         'cashbook_id': (CashBook, None),
         'category_id': (EntryCategory, 'cashbook_id'),
