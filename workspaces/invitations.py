@@ -18,10 +18,11 @@ from django.core.mail import send_mail
 from django.db import transaction
 from django.template.loader import render_to_string
 from django.utils import timezone
-from rest_framework.exceptions import PermissionDenied, ValidationError
+from rest_framework.exceptions import PermissionDenied
 
 from billing import gates
 from billing.catalog.keys import F
+from .errors import refuse
 from .models import Invitation, Membership, Workspace
 from .tenancy import add_workspace_to_context
 
@@ -48,13 +49,9 @@ def pending(workspace):
     return workspace.invitations.filter(accepted_at__isnull=True, revoked_at__isnull=True, expires_at__gt=timezone.now())
 
 
-def _refuse(code, message):
-    raise ValidationError({'code': code, 'detail': message})
-
-
 def _check_can_invite(workspace, inviter, role):
     if workspace.kind != Workspace.KIND_BUSINESS or workspace.is_demo:
-        _refuse('not_a_business', 'People can only be invited to a business.')
+        refuse('not_a_business', 'People can only be invited to a business.')
     if workspace.role_of(inviter) not in Membership.MANAGER_ROLES:
         raise PermissionDenied('Only the owner or an admin can invite people.')
     if role == Membership.ROLE_ADMIN and inviter.pk != workspace.owner_id:
@@ -68,7 +65,7 @@ def invite(workspace, inviter, role, email='', phone=''):
     """
     _check_can_invite(workspace, inviter, role)
     if email and workspace.memberships.filter(user__email__iexact=email).exists():
-        _refuse('already_member', 'This person is already in the business.')
+        refuse('already_member', 'This person is already in the business.')
 
     with transaction.atomic():
         # Two invitations at once cannot both take the last seat
@@ -107,11 +104,11 @@ def find(code, lock=False):
         invitations = invitations.select_for_update(of=('self',))
     invitation = invitations.filter(code_hash=hash_code(code or '')).first()
     if invitation is None or invitation.workspace.deleted_at is not None:
-        _refuse('invalid', 'This code is not valid.')
+        refuse('invalid', 'This code is not valid.')
     if invitation.status == Invitation.STATUS_EXPIRED:
-        _refuse('expired', 'This invitation has expired. Ask for a new one.')
+        refuse('expired', 'This invitation has expired. Ask for a new one.')
     if not invitation.is_pending:
-        _refuse('used', 'This invitation can no longer be used.')
+        refuse('used', 'This invitation can no longer be used.')
     return invitation
 
 
@@ -123,9 +120,9 @@ def accept(code, user):
         if invitation.email and not EmailAddress.objects.filter(
             user=user, email__iexact=invitation.email, verified=True,
         ).exists():
-            _refuse('wrong_account', f'This invitation is for {invitation.email}. Sign in with that address.')
+            refuse('wrong_account', f'This invitation is for {invitation.email}. Sign in with that address.')
         if workspace.memberships.filter(user=user).exists():
-            _refuse('already_member', 'You are already in this business.')
+            refuse('already_member', 'You are already in this business.')
         # The seat was held while the invitation waited; a downgrade since may have taken it
         gates.check_limit(workspace, F.TEAM_SEATS)
         Membership.objects.create(workspace=workspace, user=user, role=invitation.role, added_by=invitation.invited_by)
@@ -140,6 +137,6 @@ def revoke(invitation, user):
     if invitation.workspace.role_of(user) not in Membership.MANAGER_ROLES:
         raise PermissionDenied('Only the owner or an admin can cancel an invitation.')
     if not invitation.is_pending:
-        _refuse('used', 'This invitation can no longer be used.')
+        refuse('used', 'This invitation can no longer be used.')
     invitation.revoked_at = timezone.now()
     invitation.save(update_fields=['revoked_at'])

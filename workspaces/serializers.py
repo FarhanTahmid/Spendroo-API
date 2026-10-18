@@ -33,6 +33,16 @@ class MembershipSerializer(serializers.ModelSerializer):
         read_only_fields = fields
 
 
+class MembershipRoleSerializer(serializers.Serializer):
+    """A member's new role. Ownership is handed over, not given as a role."""
+    role = serializers.ChoiceField(choices=Invitation.ROLE_CHOICES)
+
+
+class OwnershipTransferSerializer(serializers.Serializer):
+    """The admin who takes over the business."""
+    membership_id = serializers.UUIDField()
+
+
 class InvitationSerializer(serializers.ModelSerializer):
     invited_by_email = serializers.EmailField(source='invited_by.email', read_only=True, default=None)
     status = serializers.CharField(read_only=True)

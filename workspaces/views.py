@@ -9,16 +9,19 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.throttling import ScopedRateThrottle
 
+from audit.utils.audit_utils import AuditLogMixin
 from billing import gates
 from billing.catalog.keys import F
-from . import invitations
+from . import invitations, members
 from .models import Workspace, Membership
 from .serializers import (
     InvitationCodeSerializer,
     InvitationCreateSerializer,
     InvitationPreviewSerializer,
     InvitationSerializer,
+    MembershipRoleSerializer,
     MembershipSerializer,
+    OwnershipTransferSerializer,
     WorkspaceSerializer,
 )
 from .services import create_demo_business, create_workspace, workspaces_for
@@ -26,6 +29,7 @@ from .tenancy import TenantScopedMixin
 
 
 class WorkspaceViewSet(TenantScopedMixin,
+                       AuditLogMixin,
                        mixins.ListModelMixin,
                        mixins.RetrieveModelMixin,
                        mixins.CreateModelMixin,
@@ -98,6 +102,64 @@ class WorkspaceViewSet(TenantScopedMixin,
         workspace = self.get_object()
         memberships = workspace.memberships.select_related('user')
         return Response(MembershipSerializer(memberships, many=True).data)
+
+    @extend_schema(
+        methods=['patch'], request=MembershipRoleSerializer, responses=MembershipSerializer,
+        parameters=[OpenApiParameter('membership_id', OpenApiTypes.UUID, OpenApiParameter.PATH)],
+    )
+    @extend_schema(
+        methods=['delete'], request=None, responses={204: None},
+        parameters=[OpenApiParameter('membership_id', OpenApiTypes.UUID, OpenApiParameter.PATH)],
+    )
+    @action(detail=True, methods=['patch', 'delete'], url_path=r'members/(?P<membership_id>[^/.]+)')
+    def manage_member(self, request, pk=None, membership_id=None):
+        """
+        PATCH gives a member another role; DELETE takes them out of the
+        business, or lets a member leave it. The owner can't be either.
+        """
+        workspace = self.get_object()
+        membership_id = serializers.UUIDField().run_validation(membership_id)
+        membership = get_object_or_404(workspace.memberships.select_related('user'), pk=membership_id)
+        if request.method == 'DELETE':
+            members.remove(workspace, request.user, membership)
+            leaving = membership.user_id == request.user.id
+            self.log_action(
+                request, 'DELETE', 'Membership', membership.id,
+                changes={'workspace': workspace.id, 'user': membership.user.email, 'role': membership.role},
+                operation='leave_business' if leaving else 'remove_member',
+            )
+            return Response(status=status.HTTP_204_NO_CONTENT)
+        serializer = MembershipRoleSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        role = serializer.validated_data['role']
+        old = members.change_role(workspace, request.user, membership, role)
+        if old != role:
+            self.log_action(
+                request, 'UPDATE', 'Membership', membership.id,
+                changes={'workspace': workspace.id, 'user': membership.user.email, 'role': {'old': old, 'new': role}},
+                operation='change_member_role',
+            )
+        membership.refresh_from_db()
+        return Response(MembershipSerializer(membership).data)
+
+    @extend_schema(request=OwnershipTransferSerializer, responses=WorkspaceSerializer)
+    @action(detail=True, methods=['post'], url_path='transfer-ownership')
+    def transfer_ownership(self, request, pk=None):
+        """Hand the business to one of its admins. The owner stays on as an admin."""
+        workspace = self.get_object()
+        serializer = OwnershipTransferSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        membership = get_object_or_404(
+            workspace.memberships.select_related('user'), pk=serializer.validated_data['membership_id'],
+        )
+        old_owner = workspace.owner
+        workspace = members.transfer_ownership(workspace, request.user, membership)
+        self.log_action(
+            request, 'UPDATE', 'Workspace', workspace.id,
+            changes={'owner': {'old': old_owner.email, 'new': membership.user.email}},
+            operation='transfer_ownership',
+        )
+        return Response(self.get_serializer(workspace).data)
 
     @extend_schema(methods=['get'], responses=InvitationSerializer(many=True))
     @extend_schema(methods=['post'], request=InvitationCreateSerializer, responses={201: InvitationSerializer})

@@ -8,11 +8,12 @@ from django.test import TestCase
 from django.utils import timezone
 from rest_framework.test import APIClient
 
+from audit.models import CRUDLog
 from billing.catalog.keys import F
 from billing.testing import grant_plan, set_limit
 from billing.tests.base import BillingTestCase, client_for
 
-from cashbook.models import CashBook, Entry
+from cashbook.models import CashBook, CashBookAdditionalMember, Entry
 from . import invitations
 from .models import Invitation, Membership, Workspace, WorkspaceOwnedModel
 from .services import create_workspace, get_personal_workspace
@@ -23,6 +24,7 @@ User = get_user_model()
 WORKSPACES = '/api/v1/workspaces/'
 ACCEPT = f'{WORKSPACES}invitations/accept/'
 PREVIEW = f'{WORKSPACES}invitations/preview/'
+PULL = '/api/v1/sync/pull/'
 
 # Apps whose models hold tenant data. Each model must carry the workspace key
 # and its table must have row-level security, unless listed as exempt.
@@ -408,3 +410,214 @@ class InvitationTests(BillingTestCase):
         statuses = [self.accept(self.bob_client, 'ABCDEFGHJK').status_code for _ in range(21)]
         self.assertEqual((statuses[0], statuses[-1]), (400, 429))
         cache.clear()
+
+
+class TeamTestCase(BillingTestCase):
+    """Alice owns Shop on the Business plan; Bob is an admin, Carol staff and Dan a viewer."""
+
+    def setUp(self):
+        super().setUp()
+        grant_plan(self.alice, 'business')
+        self.carol = User.objects.create_user(email='carol@example.com', password='pass-12345')
+        self.dan = User.objects.create_user(email='dan@example.com', password='pass-12345')
+        self.carol_client = client_for(self.carol)
+        self.dan_client = client_for(self.dan)
+        self.owner = self.shop.memberships.get(user=self.alice)
+        self.admin = Membership.objects.create(workspace=self.shop, user=self.bob, role=Membership.ROLE_ADMIN)
+        self.staff = Membership.objects.create(workspace=self.shop, user=self.carol, role=Membership.ROLE_STAFF)
+        self.viewer = Membership.objects.create(workspace=self.shop, user=self.dan, role=Membership.ROLE_VIEWER)
+
+    def member_url(self, membership, workspace=None):
+        return f'{WORKSPACES}{(workspace or self.shop).id}/members/{membership.id}/'
+
+    def set_role(self, client, membership, role):
+        return client.patch(self.member_url(membership), {'role': role}, format='json')
+
+    def remove(self, client, membership):
+        return client.delete(self.member_url(membership))
+
+    def role_of(self, membership):
+        return Membership.all_objects.get(pk=membership.pk).role
+
+    def audit(self, operation):
+        return CRUDLog.objects.filter(operation=operation)
+
+
+class MemberRoleTests(TeamTestCase):
+    def test_owner_changes_any_role_but_their_own(self):
+        response = self.set_role(self.alice_client, self.staff, 'viewer')
+        self.assertEqual((response.status_code, response.data['role']), (200, 'viewer'))
+        self.assertEqual(self.set_role(self.alice_client, self.admin, 'staff').status_code, 200)
+        self.assertEqual(self.set_role(self.alice_client, self.viewer, 'admin').status_code, 200)
+        self.assertEqual((self.role_of(self.staff), self.role_of(self.admin), self.role_of(self.viewer)), ('viewer', 'staff', 'admin'))
+        self.assertEqual(self.set_role(self.alice_client, self.owner, 'admin').data['code'], 'owner_role')
+        self.assertEqual(self.role_of(self.owner), 'owner')
+
+    def test_admins_move_staff_and_viewers_between_staff_and_viewer_only(self):
+        self.assertEqual(self.set_role(self.bob_client, self.staff, 'viewer').status_code, 200)
+        self.assertEqual(self.set_role(self.bob_client, self.viewer, 'staff').status_code, 200)
+        self.assertEqual(self.set_role(self.bob_client, self.staff, 'admin').status_code, 403)
+        other_admin = Membership.objects.create(
+            workspace=self.shop, user=User.objects.create_user(email='erin@example.com', password='pass-12345'),
+            role=Membership.ROLE_ADMIN,
+        )
+        self.assertEqual(self.set_role(self.bob_client, other_admin, 'staff').status_code, 403)
+        self.assertEqual(self.set_role(self.bob_client, self.admin, 'staff').status_code, 403)
+        self.assertEqual(self.set_role(self.bob_client, self.owner, 'staff').status_code, 400)
+        self.assertEqual((self.role_of(self.staff), self.role_of(self.viewer), self.role_of(other_admin)), ('viewer', 'staff', 'admin'))
+
+    def test_staff_and_viewers_change_nothing(self):
+        self.assertEqual(self.set_role(self.carol_client, self.viewer, 'staff').status_code, 403)
+        self.assertEqual(self.set_role(self.dan_client, self.staff, 'viewer').status_code, 403)
+        self.assertEqual(self.set_role(self.dan_client, self.viewer, 'admin').status_code, 403)
+        self.assertEqual(self.role_of(self.viewer), 'viewer')
+
+    def test_nobody_is_made_owner_by_a_role_change(self):
+        response = self.set_role(self.alice_client, self.admin, 'owner')
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(self.role_of(self.admin), 'admin')
+        self.assertEqual(self.set_role(self.alice_client, self.admin, 'boss').status_code, 400)
+
+    def test_outsiders_and_unknown_members_get_not_found(self):
+        stranger = client_for(User.objects.create_user(email='zed@example.com', password='pass-12345'))
+        self.assertEqual(self.set_role(stranger, self.staff, 'viewer').status_code, 404)
+        self.assertEqual(self.alice_client.patch(f'{WORKSPACES}{self.shop.id}/members/nope/', {'role': 'staff'}).status_code, 400)
+        elsewhere = create_workspace(owner=self.alice, name='Stall')
+        url = self.member_url(self.staff, elsewhere)
+        self.assertEqual(self.alice_client.patch(url, {'role': 'staff'}, format='json').status_code, 404)
+
+    def test_personal_and_demo_spaces_have_no_team_to_manage(self):
+        personal = self.personal.memberships.get(user=self.alice)
+        response = self.alice_client.patch(self.member_url(personal, self.personal), {'role': 'staff'}, format='json')
+        self.assertEqual((response.status_code, response.data['code']), (400, 'not_a_business'))
+        response = self.alice_client.delete(self.member_url(personal, self.personal))
+        self.assertEqual((response.status_code, response.data['code']), (400, 'not_a_business'))
+
+    def test_a_change_is_audited_and_the_same_role_is_not(self):
+        self.set_role(self.alice_client, self.staff, 'viewer')
+        log = self.audit('change_member_role').get()
+        self.assertEqual((log.user, log.action, log.model_name, log.record_ids), (self.alice, 'UPDATE', 'Membership', str(self.staff.id)))
+        self.assertEqual(log.changes['role'], {'old': 'staff', 'new': 'viewer'})
+        self.set_role(self.alice_client, self.staff, 'viewer')
+        self.assertEqual(self.audit('change_member_role').count(), 1)
+
+    def test_a_viewer_made_staff_sees_only_the_books_granted(self):
+        till = CashBook.objects.create(workspace=self.shop, book_name='Till')
+        CashBook.objects.create(workspace=self.shop, book_name='Safe')
+        pull = lambda: self.dan_client.get(PULL, {'workspace': str(self.shop.id)}).data['accessible_cashbook_ids']
+        self.assertEqual(len(pull()), 2)
+        self.set_role(self.alice_client, self.viewer, 'staff')
+        self.assertEqual(pull(), [])
+        CashBookAdditionalMember.objects.create(cashbook=till, member=self.dan, role='viewer')
+        self.assertEqual(pull(), [till.id])
+
+
+class MemberRemovalTests(TeamTestCase):
+    def test_a_removed_member_loses_the_business_at_once_but_stays_signed_in(self):
+        till = CashBook.objects.create(workspace=self.shop, book_name='Till')
+        grant = CashBookAdditionalMember.objects.create(cashbook=till, member=self.carol, role='editor')
+        self.assertEqual(self.remove(self.alice_client, self.staff).status_code, 204)
+
+        removed = Membership.all_objects.get(pk=self.staff.pk)
+        self.assertIsNotNone(removed.deleted_at)
+        self.assertIsNotNone(CashBookAdditionalMember.all_objects.get(pk=grant.pk).deleted_at)
+        listed = [row['id'] for row in self.carol_client.get(WORKSPACES).data['results']]
+        self.assertNotIn(str(self.shop.id), listed)
+        self.assertIn(str(get_personal_workspace(self.carol).id), listed)
+        # Not 403: the app takes a 403 from sync for a lost session and signs out
+        self.assertEqual(self.carol_client.get(PULL, {'workspace': str(self.shop.id)}).status_code, 404)
+        self.assertEqual(self.carol_client.get(f'{WORKSPACES}{self.shop.id}/').status_code, 404)
+        self.assertEqual(self.carol_client.get(PULL, {'workspace': str(get_personal_workspace(self.carol).id)}).status_code, 200)
+        self.assertNotIn(self.carol.id, [row['user'] for row in self.alice_client.get(f'{WORKSPACES}{self.shop.id}/members/').data])
+
+    def test_admins_remove_staff_and_viewers_only(self):
+        other_admin = Membership.objects.create(
+            workspace=self.shop, user=User.objects.create_user(email='erin@example.com', password='pass-12345'),
+            role=Membership.ROLE_ADMIN,
+        )
+        self.assertEqual(self.remove(self.bob_client, other_admin).status_code, 403)
+        self.assertEqual(self.remove(self.carol_client, self.viewer).status_code, 403)
+        self.assertEqual(self.remove(self.bob_client, self.viewer).status_code, 204)
+        self.assertEqual(self.remove(self.alice_client, other_admin).status_code, 204)
+
+    def test_the_owner_cannot_be_removed(self):
+        for client in (self.alice_client, self.bob_client):
+            response = self.remove(client, self.owner)
+            self.assertEqual((response.status_code, response.data['code']), (400, 'owner'))
+        self.assertIsNone(Membership.all_objects.get(pk=self.owner.pk).deleted_at)
+
+    def test_members_can_leave(self):
+        for client, membership in ((self.dan_client, self.viewer), (self.bob_client, self.admin)):
+            self.assertEqual(self.remove(client, membership).status_code, 204)
+        self.assertEqual(self.audit('leave_business').count(), 2)
+        self.assertEqual(self.audit('remove_member').count(), 0)
+
+    def test_removal_is_audited(self):
+        self.remove(self.alice_client, self.staff)
+        log = self.audit('remove_member').get()
+        self.assertEqual((log.user, log.action, log.model_name, log.record_ids), (self.alice, 'DELETE', 'Membership', str(self.staff.id)))
+        self.assertEqual((log.changes['user'], log.changes['role']), ('carol@example.com', 'staff'))
+
+    def test_removing_frees_the_seat_and_they_can_be_invited_back(self):
+        set_limit(self.alice, F.TEAM_SEATS, 3)
+        EmailAddress.objects.create(user=self.carol, email=self.carol.email, verified=True, primary=True)
+        invite = lambda: self.alice_client.post(f'{WORKSPACES}{self.shop.id}/invitations/', {'email': 'carol@example.com'}, format='json')
+        self.assertEqual(invite().status_code, 400)  # already in
+        self.remove(self.alice_client, self.staff)
+        response = invite()
+        self.assertEqual(response.status_code, 201, response.data)
+        self.assertEqual(self.carol_client.post(ACCEPT, {'code': response.data['code']}, format='json').status_code, 200)
+        self.assertEqual(self.shop.memberships.get(user=self.carol).role, 'staff')
+
+
+class OwnershipTransferTests(TeamTestCase):
+    def transfer(self, client, membership):
+        return client.post(f'{WORKSPACES}{self.shop.id}/transfer-ownership/', {'membership_id': str(membership.id)}, format='json')
+
+    def test_the_owner_hands_the_business_to_an_admin_and_stays_as_admin(self):
+        grant_plan(self.bob, 'business')
+        response = self.transfer(self.alice_client, self.admin)
+        self.assertEqual(response.status_code, 200, response.data)
+        self.assertEqual((response.data['owner'], response.data['role']), (self.bob.id, 'admin'))
+        self.shop.refresh_from_db()
+        self.assertEqual(self.shop.owner, self.bob)
+        self.assertEqual((self.role_of(self.admin), self.role_of(self.owner)), ('owner', 'admin'))
+        # The old owner is now an admin like any other
+        self.assertEqual(self.transfer(self.alice_client, self.owner).status_code, 403)
+        self.assertEqual(self.alice_client.delete(f'{WORKSPACES}{self.shop.id}/').status_code, 403)
+        self.assertEqual(self.remove(self.bob_client, self.owner).status_code, 204)
+        log = self.audit('transfer_ownership').get()
+        self.assertEqual(log.changes['owner'], {'old': 'alice@example.com', 'new': 'bob@example.com'})
+
+    def test_only_to_an_admin_and_only_by_the_owner(self):
+        grant_plan(self.carol, 'business')
+        response = self.transfer(self.alice_client, self.staff)
+        self.assertEqual((response.status_code, response.data['code']), (400, 'not_admin'))
+        self.assertEqual(self.transfer(self.bob_client, self.admin).status_code, 403)
+        self.assertEqual(self.transfer(self.carol_client, self.admin).status_code, 403)
+        self.shop.refresh_from_db()
+        self.assertEqual(self.shop.owner, self.alice)
+
+    def test_refused_when_the_new_owners_plan_has_no_room(self):
+        # Free has room for one business, and Bob has his own already
+        create_workspace(owner=self.bob, name='Stall')
+        response = self.transfer(self.alice_client, self.admin)
+        self.assertEqual((response.status_code, response.data['feature']), (402, 'business.workspaces'))
+        # Free has no team seats at all
+        set_limit(self.bob, F.BUSINESS_WORKSPACES, 5)
+        response = self.transfer(self.alice_client, self.admin)
+        self.assertEqual((response.status_code, response.data['feature']), (402, 'team.seats'))
+        grant_plan(self.bob, 'business')
+        set_limit(self.bob, F.TEAM_SEATS, 2)  # Alice, Carol and Dan would need three
+        response = self.transfer(self.alice_client, self.admin)
+        self.assertEqual((response.status_code, response.data['feature']), (402, 'team.seats'))
+        set_limit(self.bob, F.TEAM_SEATS, 3)
+        set_limit(self.bob, F.BUSINESS_CASHBOOKS, 1)
+        CashBook.objects.create(workspace=self.shop, book_name='Till')
+        CashBook.objects.create(workspace=self.shop, book_name='Safe')
+        response = self.transfer(self.alice_client, self.admin)
+        self.assertEqual((response.status_code, response.data['feature']), (402, 'business.cashbooks'))
+        # Nothing changed on the way
+        self.shop.refresh_from_db()
+        self.assertEqual((self.shop.owner, self.role_of(self.owner), self.role_of(self.admin)), (self.alice, 'owner', 'admin'))
+        self.assertFalse(self.audit('transfer_ownership').exists())
