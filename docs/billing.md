@@ -112,6 +112,14 @@ owner's numbers for the seat meter: `limit` (null when unlimited), `used`
 (members other than the owner plus invitations waiting), `members`,
 `pending`, `enforced` and `upgrade_to`.
 
+A business's edit history is the owner's alone, behind `history.audit_trail`
+on the owner's plan (402 `plan_limit` without it, 403 `owner_only` for anyone
+else). `GET /api/v1/workspaces/<id>/history/` reads the trigger-kept history
+of entries, cashbooks, categories, payment methods, cashbook access and
+members, newest first, with what changed in each. It can be narrowed by
+`cashbook`, `person`, `entry`, `from` and `to`, and pages by `cursor`.
+See `audit/history.py`.
+
 ## Commands
 
 ```

@@ -9,12 +9,16 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.throttling import ScopedRateThrottle
 
+from audit import history
 from audit.utils.audit_utils import AuditLogMixin
 from billing import gates
 from billing.catalog.keys import F
 from . import invitations, members
+from .errors import refuse
 from .models import Workspace, Membership
 from .serializers import (
+    HistoryPageSerializer,
+    HistoryQuerySerializer,
     InvitationCodeSerializer,
     InvitationCreateSerializer,
     InvitationPreviewSerializer,
@@ -112,6 +116,43 @@ class WorkspaceViewSet(TenantScopedMixin,
         invitations waiting, out of the limit. Any member may ask.
         """
         return Response(SeatsSerializer(invitations.seats(self.get_object())).data)
+
+    @extend_schema(
+        parameters=[
+            OpenApiParameter('cashbook', OpenApiTypes.UUID, description='Only changes in this cashbook.'),
+            OpenApiParameter('person', OpenApiTypes.UUID, description='Only changes this user made.'),
+            OpenApiParameter('entry', OpenApiTypes.UUID, description="One entry's changes."),
+            OpenApiParameter('from', OpenApiTypes.DATETIME, description='Changes at or after this moment.'),
+            OpenApiParameter('to', OpenApiTypes.DATETIME, description='Changes before this moment.'),
+            OpenApiParameter('cursor', str, description='`next` from the page before.'),
+            OpenApiParameter('limit', int, description=f'Up to {history.MAX_LIMIT}; {history.DEFAULT_LIMIT} by default.'),
+        ],
+        responses=HistoryPageSerializer,
+    )
+    @action(detail=True, methods=['get'])
+    def history(self, request, pk=None):
+        """
+        Who added, changed, removed or brought back what in the business, and
+        when, newest first. Only the owner may look, on a plan with
+        history.audit_trail.
+        """
+        workspace = self.get_object()
+        if workspace.kind != Workspace.KIND_BUSINESS:
+            refuse('not_a_business', 'Only a business keeps an edit history.')
+        if workspace.owner_id != request.user.id:
+            raise PermissionDenied({'code': 'owner_only', 'detail': 'Only the owner can see the edit history.'})
+        gates.require(workspace, F.AUDIT_TRAIL)
+        params = HistoryQuerySerializer(data=request.query_params)
+        params.is_valid(raise_exception=True)
+        query = params.validated_data
+        narrow = history.Narrow(
+            cashbook=query.get('cashbook'), person=query.get('person'), entry=query.get('entry'),
+            since=query.get('from'), until=query.get('to'),
+        )
+        rows, next_cursor = history.changes(
+            workspace, narrow, cursor=query.get('cursor'), limit=query.get('limit', history.DEFAULT_LIMIT),
+        )
+        return Response(HistoryPageSerializer({'results': rows, 'next': next_cursor}).data)
 
     @extend_schema(
         methods=['patch'], request=MembershipRoleSerializer, responses=MembershipSerializer,

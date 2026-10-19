@@ -102,3 +102,67 @@ class SeatsSerializer(serializers.Serializer):
     pending = serializers.IntegerField()
     enforced = serializers.BooleanField()
     upgrade_to = serializers.CharField(allow_null=True)
+
+
+class HistoryQuerySerializer(serializers.Serializer):
+    """What GET /workspaces/<id>/history/ may be narrowed by."""
+    cashbook = serializers.UUIDField(required=False)
+    person = serializers.UUIDField(required=False)
+    entry = serializers.UUIDField(required=False)
+    # Moments, so the app can send the start of the day where the owner is
+    to = serializers.DateTimeField(required=False)
+    cursor = serializers.CharField(required=False, max_length=200)
+    limit = serializers.IntegerField(required=False, min_value=1, max_value=100)
+
+    def get_fields(self):
+        fields = super().get_fields()
+        # `from` is a Python keyword, so it can't be declared like the others
+        fields['from'] = serializers.DateTimeField(required=False)
+        return fields
+
+    def validate(self, attrs):
+        if attrs.get('from') and attrs.get('to') and attrs['from'] >= attrs['to']:
+            raise serializers.ValidationError({'to': 'Must be after from.'})
+        return attrs
+
+
+class HistoryActorSerializer(serializers.Serializer):
+    id = serializers.CharField()
+    name = serializers.CharField(allow_blank=True)
+    email = serializers.EmailField()
+
+
+class HistoryCashbookSerializer(serializers.Serializer):
+    id = serializers.UUIDField()
+    name = serializers.CharField(allow_blank=True)
+
+
+class HistoryChangeSerializer(serializers.Serializer):
+    """One field: what it was and what it became, as names where the field is a link."""
+    field = serializers.CharField()
+    before = serializers.JSONField(allow_null=True)
+    after = serializers.JSONField(allow_null=True)
+
+
+class HistoryRowSerializer(serializers.Serializer):
+    id = serializers.CharField()
+    at = serializers.DateTimeField()
+    kind = serializers.ChoiceField(choices=['entry', 'cashbook', 'category', 'payment_method', 'access', 'member'])
+    action = serializers.ChoiceField(choices=['created', 'updated', 'deleted', 'restored'])
+    object_id = serializers.UUIDField()
+    cashbook = HistoryCashbookSerializer(allow_null=True)
+    # Null when no person made the change (a script, the admin)
+    actor = HistoryActorSerializer(allow_null=True)
+    subject = serializers.CharField(allow_blank=True)
+    changes = HistoryChangeSerializer(many=True)
+    # Entries: as they stand after this change
+    amount_minor = serializers.IntegerField(required=False)
+    currency = serializers.CharField(required=False)
+    entry_type = serializers.CharField(required=False)
+    # Access and members: the role after this change
+    role = serializers.CharField(required=False)
+
+
+class HistoryPageSerializer(serializers.Serializer):
+    results = HistoryRowSerializer(many=True)
+    next = serializers.CharField(allow_null=True)
