@@ -38,7 +38,7 @@ NOT_ROW_COUNTS = {F.STORAGE_ATTACHMENTS_MB, F.STORAGE_ATTACHMENT_FILE_MB, F.INSI
 METERED_FOR_LATER = {F.AI_CREDITS, F.STATEMENT_PDF_PAGES}
 # Shown or hidden by the app from data it already holds; nothing reaches the server
 DECIDED_IN_THE_APP = {
-    F.ADS, F.INSIGHTS_CUSTOM_RANGE,
+    F.ADS, F.INSIGHTS_CUSTOM_RANGE, F.INSIGHTS_BUSINESS_ADVANCED,
     F.HOME_WIDGET,
 }
 # Defined and shown, deliberately not enforced yet

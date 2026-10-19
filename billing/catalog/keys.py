@@ -50,6 +50,10 @@ class F:
     INSIGHTS_TREND_MONTHS = FeatureKey(
         'insights.trend_months', LIMIT, 'Insights: trend length', 'Longest trend the app may draw.', unit='months',
     )
+    INSIGHTS_BUSINESS_ADVANCED = FeatureKey(
+        'insights.business_advanced', FLAG, 'Insights: advanced business charts',
+        'Running balance, activity heatmap, cash health, team and bill coverage, and comparing books.',
+    )
     RECURRING_TRANSACTIONS = FeatureKey(
         'recurring.transactions', FLAG, 'Recurring transactions and reminders',
         'Transactions recorded or asked about on a schedule. Plain reminders are counted on their own.',
