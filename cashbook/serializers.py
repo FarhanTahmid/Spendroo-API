@@ -1,11 +1,17 @@
-from rest_framework import serializers
+import json
+
+from django.core.exceptions import ValidationError as DjangoValidationError
 from django.db import transaction
+from drf_spectacular.utils import extend_schema_field
+from rest_framework import serializers
+
 from workspaces.models import Membership, Workspace
 from workspaces.services import get_personal_workspace, workspaces_for
 from spendroo.money import validate_currency
+from . import custom_fields
 from .models import (
     CashBook, CashBookAdditionalMember, EntryCategory,
-    PaymentMethod, Entry, EntryBills, EntryExtraFields
+    PaymentMethod, Entry, EntryBills, EntryField
 )
 
 
@@ -65,11 +71,29 @@ class EntryBillsSerializer(serializers.ModelSerializer):
         read_only_fields = fields
 
 
-class EntryExtraFieldsSerializer(serializers.ModelSerializer):
+class CustomValuesField(serializers.Field):
+    """{field id: text}; a multipart form sends the map as a JSON string."""
+
+    def to_internal_value(self, data):
+        if isinstance(data, str):
+            try:
+                data = json.loads(data) if data.strip() else {}
+            except ValueError:
+                raise serializers.ValidationError('Not valid JSON.')
+        try:
+            return custom_fields.cleaned_shape(data)
+        except DjangoValidationError as error:
+            raise serializers.ValidationError(error.message_dict['custom_values'])
+
+    def to_representation(self, value):
+        return value or {}
+
+
+class EntryFieldSerializer(serializers.ModelSerializer):
     class Meta:
-        model = EntryExtraFields
-        fields = ['id', 'field_name', 'field_value']
-        read_only_fields = ['id']
+        model = EntryField
+        fields = ['id', 'name', 'kind', 'options', 'required', 'show_in_list', 'position']
+        read_only_fields = fields
 
 
 class EntryListSerializer(serializers.ModelSerializer):
@@ -83,7 +107,7 @@ class EntryListSerializer(serializers.ModelSerializer):
         fields = [
             'id', 'entry_type', 'amount_minor', 'currency', 'source', 'title', 'entry_date',
             'category', 'category_name', 'payment_method', 'payment_method_name',
-            'created_by', 'created_by_email', 'bills_count', 'version', 'created_at', 'updated_at'
+            'created_by', 'created_by_email', 'bills_count', 'custom_values', 'version', 'created_at', 'updated_at'
         ]
         read_only_fields = fields
 
@@ -96,31 +120,32 @@ class EntryDetailSerializer(serializers.ModelSerializer):
     payment_method_name = serializers.CharField(source='payment_method.payment_method_name', read_only=True)
     created_by_email = serializers.EmailField(source='created_by.email', read_only=True)
     bills = EntryBillsSerializer(many=True, read_only=True)
-    extra_fields = EntryExtraFieldsSerializer(many=True, read_only=True)
+    # The book's live fields, in order, so a value can be shown with its name
+    fields_of_book = serializers.SerializerMethodField()
 
     class Meta:
         model = Entry
         fields = [
             'id', 'entry_type', 'amount_minor', 'currency', 'source', 'title', 'remarks', 'entry_date',
             'category', 'category_name', 'payment_method', 'payment_method_name',
-            'created_by', 'created_by_email', 'bills', 'extra_fields',
+            'created_by', 'created_by_email', 'bills', 'custom_values', 'fields_of_book',
             'version', 'created_at', 'updated_at'
         ]
         read_only_fields = fields
 
+    @extend_schema_field(EntryFieldSerializer(many=True))
+    def get_fields_of_book(self, obj):
+        return EntryFieldSerializer(EntryField.objects.filter(cashbook_id=obj.cashbook_id), many=True).data
+
 
 class EntryCreateUpdateSerializer(serializers.ModelSerializer):
-    extra_fields_data = serializers.ListField(
-        child=serializers.DictField(),
-        write_only=True,
-        required=False
-    )
+    custom_values = CustomValuesField(required=False)
 
     class Meta:
         model = Entry
         fields = [
             'id', 'entry_type', 'amount_minor', 'source', 'title', 'remarks', 'entry_date',
-            'category', 'payment_method', 'extra_fields_data'
+            'category', 'payment_method', 'custom_values'
         ]
         read_only_fields = ['id']
 
@@ -136,45 +161,13 @@ class EntryCreateUpdateSerializer(serializers.ModelSerializer):
             value = attrs.get(field)
             if value is not None and value.cashbook_id != cashbook.id:
                 raise serializers.ValidationError({field: 'Does not belong to this cashbook.'})
+        if 'custom_values' in attrs:
+            before = self.instance.custom_values if self.instance else {}
+            try:
+                custom_fields.check_values(cashbook, attrs['custom_values'], before)
+            except DjangoValidationError as error:
+                raise serializers.ValidationError(error.message_dict)
         return attrs
-
-    def create(self, validated_data):
-        extra_fields_data = validated_data.pop('extra_fields_data', [])
-
-        with transaction.atomic():
-            entry = Entry.objects.create(**validated_data)
-
-            # Create extra fields
-            for field_data in extra_fields_data:
-                EntryExtraFields.objects.create(
-                    entry=entry,
-                    field_name=field_data.get('field_name'),
-                    field_value=field_data.get('field_value')
-                )
-
-        return entry
-
-    def update(self, instance, validated_data):
-        extra_fields_data = validated_data.pop('extra_fields_data', None)
-
-        with transaction.atomic():
-            # Update entry
-            for attr, value in validated_data.items():
-                setattr(instance, attr, value)
-            instance.save()
-
-            # Update extra fields if provided
-            if extra_fields_data is not None:
-                for extra_field in instance.extra_fields.all():
-                    extra_field.soft_delete()
-                for field_data in extra_fields_data:
-                    EntryExtraFields.objects.create(
-                        entry=instance,
-                        field_name=field_data.get('field_name'),
-                        field_value=field_data.get('field_value')
-                    )
-
-        return instance
 
 
 class CashBookListSerializer(serializers.ModelSerializer):

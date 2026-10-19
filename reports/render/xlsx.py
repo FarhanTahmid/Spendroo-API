@@ -14,7 +14,9 @@ from openpyxl.utils import get_column_letter
 
 from spendroo.money import currency_exponent, to_major
 
-from ..document import COUNT, DATE, MONEY, SHARE, TONE_BALANCE, TONE_IN, TONE_OUT
+from decimal import Decimal
+
+from ..document import COUNT, DATE, MONEY, NUMBER, SHARE, TONE_BALANCE, TONE_IN, TONE_OUT
 from ..labels import Words
 from . import cells
 
@@ -61,7 +63,7 @@ def _write(sheet, row, column, value, *, font=None, fill=None, border=None, alig
 def _cell(sheet, row, index, column, value, table, *, bold=False, fill=None, border=HAIRLINE):
     """One table cell, as a value Excel can work with."""
     font = Font(bold=bold or column.tone == TONE_BALANCE, color=TONE_COLOR.get(column.tone))
-    align = Alignment(vertical='top', wrap_text=column.kind not in (MONEY, COUNT, SHARE, DATE))
+    align = Alignment(vertical='top', wrap_text=column.kind not in (MONEY, COUNT, SHARE, DATE, NUMBER))
     number_format = None
     if value is None or value == '':
         value = None
@@ -74,6 +76,10 @@ def _cell(sheet, row, index, column, value, table, *, bold=False, fill=None, bor
         number_format = '#,##0'
     elif column.kind == SHARE:
         number_format = '0.0%'
+    elif column.kind == NUMBER and isinstance(value, Decimal):
+        # As many decimals as were typed: 12.5 stays 12.5, 1200 stays 1,200
+        places = max(0, -value.as_tuple().exponent)
+        number_format = '#,##0' + ('.' + '0' * places if places else '')
     _write(sheet, row, index, value, font=font, fill=fill, border=border, align=align, number_format=number_format)
 
 
@@ -87,7 +93,7 @@ def _table(sheet, row, table, words):
             row += 1
     header = row
     for index, column in enumerate(table.columns, 1):
-        numeric = column.kind in (MONEY, COUNT, SHARE)
+        numeric = column.kind in (MONEY, COUNT, SHARE, NUMBER)
         _write(
             sheet, row, index, column.label, font=Font(bold=True, color='FFFFFF'), fill=HEAD_FILL,
             align=Alignment(horizontal='right' if numeric else 'left', vertical='center'),

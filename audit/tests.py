@@ -6,7 +6,7 @@ from django.utils import timezone
 from billing.catalog.keys import F
 from billing.testing import set_flag
 from billing.tests.base import client_for
-from cashbook.models import CashBook, CashBookAdditionalMember, Entry
+from cashbook.models import CashBook, CashBookAdditionalMember, Entry, EntryField
 from workspaces.models import Membership
 from workspaces.services import create_workspace
 from workspaces.tests import TeamTestCase
@@ -77,6 +77,38 @@ class WhatTheOwnerSeesTests(HistoryTestCase):
         )
         self.assertEqual((edited['amount_minor'], edited['currency'], edited['entry_type']), (12500, 'BDT', 'cash_out'))
         self.assertEqual(created['changes'], [])
+
+    def test_each_changed_field_value_is_a_change_of_its_own_by_name(self):
+        invoice = EntryField.objects.create(cashbook=self.till, name='Invoice no', kind='text')
+        party = EntryField.objects.create(cashbook=self.till, name='Party', kind='choice', options=['Rahim', 'Karim'],
+                                          position=1)
+        entry_id = self.add_entry(self.carol_client, title='Stock')
+        entry = Entry.objects.get(id=entry_id)
+        entry.custom_values = {str(invoice.id): '1041', str(party.id): 'Rahim'}
+        entry.save()
+        entry.custom_values = {str(invoice.id): '1042', str(party.id): 'Rahim'}
+        entry.save()
+        # A field deleted later keeps its name in what happened before
+        invoice.soft_delete()
+
+        rows = self.entry_rows()
+        self.assertEqual(rows[0]['changes'], [
+            {'field': 'custom_value', 'name': 'Invoice no', 'kind': 'text', 'before': '1041', 'after': '1042'},
+        ])
+        self.assertEqual(rows[1]['changes'], [
+            {'field': 'custom_value', 'name': 'Invoice no', 'kind': 'text', 'before': None, 'after': '1041'},
+            {'field': 'custom_value', 'name': 'Party', 'kind': 'choice', 'before': None, 'after': 'Rahim'},
+        ])
+
+    def test_fields_of_a_book_are_in_the_history_but_not_their_order(self):
+        field = EntryField.objects.create(cashbook=self.till, name='Party', kind='text')
+        field.position = 3
+        field.save()
+        field.name = 'Supplier'
+        field.save()
+        rows = [row for row in self.rows() if row['kind'] == 'field']
+        self.assertEqual([(row['action'], row['subject']) for row in rows], [('updated', 'Supplier'), ('created', 'Party')])
+        self.assertEqual(rows[0]['changes'], [{'field': 'name', 'before': 'Party', 'after': 'Supplier'}])
 
     def test_a_restored_entry(self):
         entry = Entry.objects.create(cashbook=self.till, entry_type='cash_in', amount_minor=500, entry_date='2026-10-01')

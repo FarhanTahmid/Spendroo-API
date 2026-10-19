@@ -14,6 +14,7 @@ merged, because each keeps its own event ids.
 import base64
 import binascii
 import heapq
+import uuid
 from itertools import islice
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -22,7 +23,7 @@ from django.contrib.auth import get_user_model
 from django.db.models import OuterRef, Subquery
 from rest_framework.exceptions import ParseError
 
-from cashbook.models import CashBook, CashBookAdditionalMember, Entry, EntryCategory, PaymentMethod
+from cashbook.models import CashBook, CashBookAdditionalMember, Entry, EntryCategory, EntryField, PaymentMethod
 from workspaces.models import Membership
 
 DEFAULT_LIMIT = 30
@@ -53,12 +54,17 @@ class Source:
 SOURCES = (
     Source(
         'entry', Entry,
-        ('entry_type', 'amount_minor', 'entry_date', 'title', 'remarks', 'category_id', 'payment_method_id'),
+        (
+            'entry_type', 'amount_minor', 'entry_date', 'title', 'remarks', 'category_id', 'payment_method_id',
+            'custom_values',
+        ),
         names={'category_id': 'category', 'payment_method_id': 'payment_method'},
     ),
     Source('cashbook', CashBook, ('book_name', 'description', 'currency'), cashbook_column='pgh_obj_id'),
     Source('category', EntryCategory, ('category_name', 'color'), seeded_column='is_default'),
     Source('payment_method', PaymentMethod, ('payment_method_name',), seeded_column='is_default'),
+    # Moving a field up or down is not a change anyone would look for
+    Source('field', EntryField, ('name', 'options', 'required', 'show_in_list')),
     Source('access', CashBookAdditionalMember, ('role',)),
     Source('member', Membership, ('role',), cashbook_column=None),
 )
@@ -214,11 +220,7 @@ def _rows(workspace, found):
             'cashbook': names.cashbook(_cashbook_of(source, event)),
             'actor': names.person(user_id),
             'subject': names.subject(source, event),
-            'changes': [
-                {'field': name.removesuffix('_id'), 'before': names.value(source, name, old),
-                 'after': names.value(source, name, new)}
-                for name, old, new in changed
-            ],
+            'changes': [change for name, old, new in changed for change in names.changes(source, name, old, new)],
         }
         if source.kind == 'entry':
             row.update(amount_minor=event.amount_minor, currency=event.currency, entry_type=event.entry_type)
@@ -226,6 +228,21 @@ def _rows(workspace, found):
             row['role'] = event.role
         rows.append(row)
     return rows
+
+
+def _changed_values(old, new):
+    old, new = old or {}, new or {}
+    return [key for key in {**old, **new} if old.get(key) != new.get(key)]
+
+
+def _field_ids(keys):
+    ids = []
+    for key in keys:
+        try:
+            ids.append(uuid.UUID(key))
+        except ValueError:
+            pass
+    return ids
 
 
 def _cashbook_of(source, event):
@@ -240,7 +257,7 @@ class _Names:
     """Everything a page names, looked up at once, deleted rows and former members included."""
 
     def __init__(self, workspace, found):
-        books, categories, methods, people = set(), set(), set(), set()
+        books, categories, methods, people, fields = set(), set(), set(), set(), set()
         for source, event, _, changed, _ in found:
             if source.cashbook_column:
                 books.add(getattr(event, source.cashbook_column))
@@ -249,6 +266,9 @@ class _Names:
             if column := _person_of(source, event):
                 people.add(getattr(event, column))
             for name, old, new in changed:
+                if name == 'custom_values':
+                    fields.update(_changed_values(old, new))
+                    continue
                 target = {'category_id': categories, 'payment_method_id': methods}.get(name)
                 if target is not None:
                     target.update(value for value in (old, new) if value)
@@ -262,6 +282,10 @@ class _Names:
             PaymentMethod.all_objects.filter(workspace=workspace, id__in=methods)
             .values_list('id', 'payment_method_name'),
         )
+        self.fields = {
+            str(row.id): row
+            for row in EntryField.all_objects.filter(workspace=workspace, id__in=_field_ids(fields))
+        }
         self.people = {
             str(user.pk): user
             for user in get_user_model().objects.filter(pk__in=[p for p in people if p])
@@ -287,8 +311,29 @@ class _Names:
             return event.category_name
         if source.kind == 'payment_method':
             return event.payment_method_name
+        if source.kind == 'field':
+            return event.name
         person = self.person(getattr(event, _person_of(source, event)))
         return (person['name'] or person['email']) if person else ''
+
+    def changes(self, source, name, old, new):
+        """
+        A change as the app shows it. A book's own fields are one change each,
+        named and in the book's order: "Invoice no: 1041 → 1042".
+        """
+        if name != 'custom_values':
+            return [{
+                'field': name.removesuffix('_id'),
+                'before': self.value(source, name, old), 'after': self.value(source, name, new),
+            }]
+        old, new = old or {}, new or {}
+        found = [(self.fields.get(key), key) for key in _changed_values(old, new)]
+        # A value whose field never existed in this workspace is nobody's change
+        found = sorted(((field, key) for field, key in found if field), key=lambda pair: (pair[0].position, pair[0].created_at))
+        return [
+            {'field': 'custom_value', 'name': field.name, 'kind': field.kind, 'before': old.get(key), 'after': new.get(key)}
+            for field, key in found
+        ]
 
     def value(self, source, name, value):
         if value is None:

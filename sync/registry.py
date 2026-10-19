@@ -9,8 +9,11 @@ from django.db import transaction
 from django.utils import timezone
 
 from billing.catalog.keys import F
-from billing.sync_gates import NO_GATES, Flag, Limit, Lock
-from cashbook.models import CashBook, CashBookAdditionalMember, Entry, EntryBills, EntryCategory, PaymentMethod
+from billing.sync_gates import NO_GATES, ColumnFlag, Flag, Limit, Lock
+from cashbook import custom_fields
+from cashbook.models import (
+    CashBook, CashBookAdditionalMember, Entry, EntryBills, EntryCategory, EntryField, PaymentMethod,
+)
 from ledger_personal import allocations
 from ledger_personal import goals as goal_math
 from ledger_personal.models import Account, Budget, Category, SavingsGoal, Transaction
@@ -148,10 +151,33 @@ class PaymentMethodTable(CashBookChildTable):
     required_permission = 'admin'
 
 
+class EntryFieldTable(CashBookChildTable):
+    """A book's own fields. Set up by whoever runs the book, like its categories."""
+    writable = ['cashbook_id', 'name', 'kind', 'options', 'required', 'show_in_list', 'position']
+    immutable = ['cashbook_id', 'kind']
+    references = {'cashbook_id': (CashBook, None)}
+    required_permission = 'admin'
+    # Removing a field is never refused (deletes are not gated), so a downgrade can still tidy up
+    plan_gates = [
+        Lock(F.BUSINESS_CASHBOOKS, target=lambda row: row.cashbook_id),
+        Flag(F.ENTRY_CUSTOM_FIELDS),
+    ]
+
+    def on_write(self, workspace, user, obj, creating, before):
+        siblings = EntryField.objects.filter(cashbook_id=obj.cashbook_id).exclude(pk=obj.pk)
+        if creating and siblings.count() >= custom_fields.MAX_FIELDS:
+            raise ValidationError(f'A book has at most {custom_fields.MAX_FIELDS} fields.')
+        if obj.show_in_list and (creating or 'show_in_list' in before):
+            # One field shows on the entry list: the last one pinned, on every phone after its next pull
+            for other in siblings.filter(show_in_list=True):
+                other.show_in_list = False
+                other.save(update_fields=['show_in_list'])
+
+
 class EntryTable(CashBookChildTable):
     writable = [
         'cashbook_id', 'category_id', 'payment_method_id', 'entry_type', 'amount_minor',
-        'title', 'remarks', 'entry_date', 'source',
+        'title', 'remarks', 'entry_date', 'source', 'custom_values',
     ]
     immutable = ['cashbook_id']
     read_only = ['currency', 'created_by_id']
@@ -162,6 +188,18 @@ class EntryTable(CashBookChildTable):
         'category_id': (EntryCategory, 'cashbook_id'),
         'payment_method_id': (PaymentMethod, 'cashbook_id'),
     }
+    plan_gates = [
+        Lock(F.BUSINESS_CASHBOOKS, target=lambda row: row.cashbook_id),
+        # Field values are the plan feature; the rest of an entry stays editable after a downgrade
+        ColumnFlag(F.ENTRY_CUSTOM_FIELDS, 'custom_values', {}),
+    ]
+
+    def on_write(self, workspace, user, obj, creating, before):
+        if creating:
+            # A new entry always counts: values for fields gone while the phone was offline are dropped
+            obj.custom_values = custom_fields.drop_invalid(obj.cashbook, obj.custom_values)
+        elif 'custom_values' in before:
+            custom_fields.check_values(obj.cashbook, obj.custom_values, before['custom_values'])
 
 
 class CashBookMemberTable(CashBookChildTable):
@@ -355,6 +393,7 @@ TABLES = {
         CashBookTable('cashbooks', CashBook),
         EntryCategoryTable('entry_categories', EntryCategory),
         PaymentMethodTable('payment_methods', PaymentMethod),
+        EntryFieldTable('entry_fields', EntryField),
         EntryTable('entries', Entry),
         EntryBillTable('entry_bills', EntryBills),
         CashBookMemberTable('cashbook_members', CashBookAdditionalMember),

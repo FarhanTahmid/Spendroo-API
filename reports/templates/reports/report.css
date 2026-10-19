@@ -84,6 +84,7 @@ h3 { font-size: 9.6pt; font-weight: 700; margin: 0; }
 .data tr { break-inside: avoid; }
 .data .money, .data .count, .data .share { text-align: right; white-space: nowrap; }
 .data td.date { white-space: nowrap; }
+.data td .sub { display: block; margin-top: 0.6mm; font-size: 7pt; font-weight: 400; color: #5B6B84; }
 .data td.in { color: #17804A; }
 .data td.out { color: #D93F4C; }
 .data td.balance { font-weight: 600; }

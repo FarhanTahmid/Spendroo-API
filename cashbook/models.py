@@ -1,7 +1,9 @@
 import pghistory
 from django.conf import settings
+from django.core.exceptions import ValidationError
 from django.db import models, transaction
 from django.db.models import F, Q, Sum
+from django.db.models.functions import Lower
 
 from workspaces.models import AliveManager, Membership, WorkspaceOwnedModel, hex_color
 
@@ -77,9 +79,8 @@ class CashBook(WorkspaceOwnedModel):
         with transaction.atomic():
             super().soft_delete()
             stamp = {'deleted_at': self.deleted_at, 'updated_at': self.deleted_at, 'version': F('version') + 1}
-            for model in (Entry, EntryCategory, PaymentMethod, CashBookAdditionalMember):
+            for model in (Entry, EntryCategory, PaymentMethod, EntryField, CashBookAdditionalMember):
                 model.all_objects.filter(cashbook=self, deleted_at__isnull=True).update(**stamp)
-            EntryExtraFields.all_objects.filter(entry__cashbook=self, deleted_at__isnull=True).update(**stamp)
             # Bills also give the owner's storage back and leave the disk
             from .bills import discard
             discard(EntryBills.all_objects.filter(cashbook=self))
@@ -226,6 +227,81 @@ class PaymentMethod(WorkspaceOwnedModel):
 
 
 @pghistory.track()
+class EntryField(WorkspaceOwnedModel):
+    """
+    A field a business adds to every entry of one book, such as an invoice
+    number or the party paid. Entries keep their values in
+    Entry.custom_values, checked by cashbook/custom_fields.py.
+    """
+    TEXT = 'text'
+    NUMBER = 'number'
+    DATE = 'date'
+    CHOICE = 'choice'
+    KIND_CHOICES = [(TEXT, 'Text'), (NUMBER, 'Number'), (DATE, 'Date'), (CHOICE, 'Choice')]
+    MAX_OPTIONS = 30
+    NAME_LENGTH = 60
+
+    cashbook = models.ForeignKey(CashBook, on_delete=models.CASCADE, related_name='fields')
+    name = models.CharField(max_length=NAME_LENGTH)
+    # Fixed once made: values already kept would not fit another kind
+    kind = models.CharField(max_length=10, choices=KIND_CHOICES)
+    # What a choice field offers; empty for every other kind
+    options = models.JSONField(default=list, blank=True)
+    # Asked for by the app on new entries; the server never refuses an entry for a missing value
+    required = models.BooleanField(default=False)
+    # The one field shown on the book's entry list; the last one pinned wins (sync/registry.py)
+    show_in_list = models.BooleanField(default=False)
+    position = models.IntegerField(default=0)
+
+    class Meta:
+        verbose_name = 'Entry Field'
+        verbose_name_plural = 'Entry Fields'
+        ordering = ['position', 'created_at']
+        constraints = [
+            models.UniqueConstraint(
+                Lower('name'), 'cashbook',
+                condition=Q(deleted_at__isnull=True),
+                name='one_field_name_per_cashbook',
+            ),
+        ]
+        indexes = [
+            models.Index(fields=['workspace', 'cashbook']),
+        ]
+
+    def __str__(self):
+        return f"{self.name} ({self.kind}) - {self.cashbook.book_name}"
+
+    def get_parent_workspace_id(self):
+        return self.cashbook.workspace_id
+
+    def clean(self):
+        self.name = ' '.join((self.name or '').split())
+        if not self.name:
+            raise ValidationError({'name': 'A field needs a name.'})
+        if self.kind != self.CHOICE:
+            if self.options:
+                raise ValidationError({'options': 'Only a choice field has options.'})
+            self.options = []
+            return
+        if not isinstance(self.options, list) or not all(isinstance(option, str) for option in self.options):
+            raise ValidationError({'options': 'Options are a list of names.'})
+        cleaned, seen = [], set()
+        for option in self.options:
+            option = ' '.join(option.split())
+            if not option or option.casefold() in seen:
+                continue
+            if len(option) > self.NAME_LENGTH:
+                raise ValidationError({'options': f'An option is at most {self.NAME_LENGTH} characters.'})
+            seen.add(option.casefold())
+            cleaned.append(option)
+        if not cleaned:
+            raise ValidationError({'options': 'A choice field needs at least one option.'})
+        if len(cleaned) > self.MAX_OPTIONS:
+            raise ValidationError({'options': f'A choice field offers at most {self.MAX_OPTIONS} options.'})
+        self.options = cleaned
+
+
+@pghistory.track()
 class Entry(WorkspaceOwnedModel):
     ENTRY_TYPES = (
         ('cash_in', 'Cash In'),
@@ -254,6 +330,8 @@ class Entry(WorkspaceOwnedModel):
     remarks = models.TextField(null=True, blank=True)
 
     entry_date = models.DateField(null=False, blank=False)
+    # The book's own fields (EntryField): {field id: value as text}, checked by cashbook/custom_fields.py
+    custom_values = models.JSONField(default=dict, blank=True)
 
     class Meta:
         verbose_name = "Cashbook Entry"
@@ -277,6 +355,10 @@ class Entry(WorkspaceOwnedModel):
     def save(self, *args, **kwargs):
         self.currency = self.cashbook.currency
         super().save(*args, **kwargs)
+
+    def clean(self):
+        from .custom_fields import cleaned_shape
+        self.custom_values = cleaned_shape(self.custom_values)
 
     def soft_delete(self):
         """Through the API or a phone's sync alike: the entry's bills go with it."""
@@ -339,23 +421,3 @@ class EntryBills(WorkspaceOwnedModel):
         if self.cashbook_id is None:
             self.cashbook_id = self.entry.cashbook_id
         super().save(*args, **kwargs)
-
-
-class EntryExtraFields(WorkspaceOwnedModel):
-    entry = models.ForeignKey(Entry, on_delete=models.CASCADE, related_name='extra_fields')
-
-    field_name = models.CharField(null=False, blank=False, max_length=100)
-    field_value = models.TextField(null=False, blank=False)
-
-    class Meta:
-        verbose_name = "Extra Field of Entry"
-        verbose_name_plural = "Extra Fields of Entries"
-        indexes = [
-            models.Index(fields=["entry", "field_name"]),
-        ]
-
-    def __str__(self):
-        return f"{self.field_name}: {self.field_value} - {self.entry.title or self.entry.id}"
-
-    def get_parent_workspace_id(self):
-        return self.entry.workspace_id

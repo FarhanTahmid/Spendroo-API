@@ -26,18 +26,27 @@ def css_string(value):
     return '"' + cleaned.replace('\\', '\\\\').replace('"', '\\"') + '"'
 
 
+def _printed(table):
+    return [column for column in table.columns if column.under is None]
+
+
 def _row(words, table, values, kind=''):
-    return {
-        'kind': kind,
-        'cells': [
-            {'text': cells.text(words, column, value, table), 'kind': column.kind, 'tone': column.tone}
-            for column, value in zip(table.columns, values)
-        ],
-    }
+    row = []
+    folded = {}
+    for column, value in zip(table.columns, values):
+        text = cells.text(words, column, value, table)
+        if column.under is None:
+            row.append({'text': text, 'kind': column.kind, 'tone': column.tone, 'sub': ''})
+        elif text:
+            folded.setdefault(column.under, []).append(f'{column.label}: {text}')
+    for index, lines in folded.items():
+        row[index]['sub'] = '  ·  '.join(lines)
+    return {'kind': kind, 'cells': row}
 
 
 def _table(words, table):
-    width = sum(column.width for column in table.columns)
+    printed = _printed(table)
+    width = sum(column.width for column in printed)
     return {
         'title': table.title,
         'note': table.note,
@@ -45,7 +54,7 @@ def _table(words, table):
         'amounts_in': words.t('table.amounts_in', currency=table.currency) if table.currency else '',
         'columns': [
             {'label': column.label, 'kind': column.kind, 'width': f'{column.width / width * 100:.2f}'}
-            for column in table.columns
+            for column in printed
         ],
         'first': _row(words, table, table.first, 'edge') if table.first else None,
         'rows': [_row(words, table, values) for values in table.rows],

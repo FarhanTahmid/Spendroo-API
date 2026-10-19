@@ -10,7 +10,7 @@ from openpyxl import load_workbook
 from billing.catalog.keys import F
 from billing.models import Feature, FunnelEvent, Plan, PlanFeature
 from billing.testing import grant_plan, set_mode, set_plan_value
-from cashbook.models import CashBookAdditionalMember
+from cashbook.models import CashBookAdditionalMember, EntryField
 from reports import views
 from reports.models import ReportDownload
 from workspaces.models import Membership
@@ -106,6 +106,22 @@ class DownloadTests(ReportTestCase):
         self.assertEqual(details[4][0].date(), date(2026, 10, 2))
         self.assertEqual(details[-1][1:3] + details[-1][5:], ('Closing balance', None, 34050))
         self.assertIn('SR-20261012-', book['Details'].oddFooter.left.text)
+
+    def test_field_values_are_real_numbers_and_dates_in_the_workbook(self):
+        grant_plan(self.alice, 'business')
+        weight = EntryField.objects.create(cashbook=self.till, name='Weight', kind='number')
+        due = EntryField.objects.create(cashbook=self.till, name='Due', kind='date', position=1)
+        self.entry(self.till, 'cash_in', 3000, '2026-10-05', title='Wholesale',
+                   custom_values={str(weight.id): '1200.5', str(due.id): '2026-11-01'})
+        sheet = self.workbook(self.urls()['cashbook'])['Details']
+        rows = list(sheet.iter_rows())
+        header = next(row for row in rows if row[0].value == 'Date')
+        self.assertEqual([cell.value for cell in header[-2:]], ['Weight', 'Due'])
+        wholesale = next(row for row in rows if row[1].value == 'Wholesale')
+        self.assertEqual(wholesale[-2].value, Decimal('1200.5'))
+        self.assertEqual(wholesale[-2].number_format, '#,##0.0')
+        self.assertEqual(wholesale[-1].value.date(), date(2026, 11, 1))
+        self.assertEqual(self.alice_client.get(self.urls()['cashbook']).status_code, 200)
 
     def test_what_a_user_typed_is_never_a_formula(self):
         grant_plan(self.alice, 'plus')

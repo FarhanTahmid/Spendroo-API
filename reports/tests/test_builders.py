@@ -1,10 +1,13 @@
 from datetime import date
 
-from cashbook.models import CashBook
+from decimal import Decimal
+
+from cashbook.models import CashBook, EntryField
 from ledger_personal.models import Account, Category
 from reports import periods
 from reports.builders import account, business, cashbook, personal
-from reports.document import Money, Totals
+from reports.document import NUMBER, TEXT, Money, Totals
+from reports.render import pdf
 
 from .base import ReportTestCase
 
@@ -146,6 +149,55 @@ class CashbookReportTests(ReportTestCase):
         report = cashbook.build(self.till, self.context())
         self.assertEqual(self.table(report, 'Entries').rows[1][2], '')
         self.assertIn('Uncategorised', [row[0] for row in self.table(report, 'By category').rows])
+
+
+class CustomFieldReportTests(ReportTestCase):
+    """A book's own fields: columns of their own in Excel, a line under the details in the PDF."""
+
+    def setUp(self):
+        super().setUp()
+        self.invoice = EntryField.objects.create(cashbook=self.till, name='Invoice no', kind='text', position=0)
+        self.weight = EntryField.objects.create(cashbook=self.till, name='Weight', kind='number', position=1)
+        self.due = EntryField.objects.create(cashbook=self.till, name='Due', kind='date', position=2)
+        self.entry(self.till, 'cash_in', 3000, '2026-10-05', title='Wholesale', custom_values={
+            str(self.invoice.id): 'INV-1042', str(self.weight.id): '1200.5', str(self.due.id): '2026-11-01',
+        })
+
+    def entries(self, **context):
+        return self.table(cashbook.build(self.till, self.context(**context)), 'Entries')
+
+    def test_each_field_is_a_typed_column_after_the_balance(self):
+        entries = self.entries()
+        self.assertEqual([column.label for column in entries.columns[-3:]], ['Invoice no', 'Weight', 'Due'])
+        self.assertEqual([column.kind for column in entries.columns[-3:]], [TEXT, NUMBER, 'date'])
+        self.assertEqual(entries.rows[-1][-3:], ['INV-1042', Decimal('1200.5'), date(2026, 11, 1)])
+        # Entries without values, and the opening and closing rows, leave them blank
+        self.assertEqual(entries.rows[0][-3:], [None, None, None])
+        self.assertEqual(len(entries.first), len(entries.columns))
+        self.assertEqual(len(entries.total), len(entries.columns))
+
+    def test_a_deleted_field_is_left_out_and_a_value_that_does_not_parse_stays_as_kept(self):
+        self.due.soft_delete()
+        self.entry(self.till, 'cash_out', 100, '2026-10-06', custom_values={str(self.weight.id): 'about 3'})
+        entries = self.entries()
+        self.assertEqual([column.label for column in entries.columns[-2:]], ['Invoice no', 'Weight'])
+        self.assertEqual(entries.rows[-1][-1], 'about 3')
+
+    def test_the_pdf_prints_values_under_the_details(self):
+        report = cashbook.build(self.till, self.context())
+        table = pdf.context(report)['details'][0]
+        self.assertEqual(len(table['columns']), 8)
+        wholesale = next(row for row in table['rows'] if row['cells'][1]['text'] == 'Wholesale')
+        self.assertEqual(wholesale['cells'][1]['sub'], 'Invoice no: INV-1042  ·  Weight: 1,200.5  ·  Due: 1 Nov 2026')
+        self.assertEqual(len(wholesale['cells']), 8)
+
+    def test_in_bangla_the_digits_are_bangla_and_the_names_as_typed(self):
+        table = pdf.context(cashbook.build(self.till, self.context(language='bn')))['details'][0]
+        wholesale = next(row for row in table['rows'] if row['cells'][1]['text'] == 'Wholesale')
+        self.assertIn('Weight: ১,২০০.৫', wholesale['cells'][1]['sub'])
+
+    def test_a_book_without_fields_keeps_its_columns(self):
+        self.assertEqual(len(self.table(cashbook.build(self.safe, self.context()), 'Entries').columns), 8)
 
 
 class BusinessReportTests(ReportTestCase):

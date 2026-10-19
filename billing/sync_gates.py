@@ -51,6 +51,34 @@ class Flag(Gate):
             gates.require(workspace, self.feature)
 
 
+class ColumnFlag(Gate):
+    """
+    The plan must include the feature to change one column. Other edits of
+    the row go through whatever the column holds, so a downgrade never
+    freezes the whole row. A new row is never refused over the column: it
+    is kept without it (`empty`), since a phone drops a refused create.
+    """
+
+    def __init__(self, feature, column, empty):
+        self.feature = feature
+        self.column = column
+        self.empty = empty
+
+    def check(self, workspace, obj, creating, before):
+        value = getattr(obj, self.column)
+        if creating:
+            if value == self.empty:
+                return
+            try:
+                gates.require(workspace, self.feature)
+            except gates.PlanLimit as error:
+                setattr(obj, self.column, copy.deepcopy(self.empty))
+                gates.record_hit(gates.payer_of(workspace), error.feature_key, error.meta['plan'])
+            return
+        if self.column in before and before[self.column] != value:
+            gates.require(workspace, self.feature)
+
+
 class Lock(Gate):
     """
     Read-only when a downgrade locked the row `target` points at: the row

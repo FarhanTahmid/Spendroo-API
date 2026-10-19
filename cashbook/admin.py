@@ -7,7 +7,7 @@ from spendroo.money import format_money
 from . import bills
 from .models import (
     CashBook, CashBookAdditionalMember, EntryCategory, 
-    PaymentMethod, Entry, EntryBills, EntryExtraFields
+    PaymentMethod, Entry, EntryBills, EntryField
 )
 
 
@@ -109,13 +109,6 @@ class EntryBillsInline(TabularInline):
         return False
 
 
-class EntryExtraFieldsInline(TabularInline):
-    model = EntryExtraFields
-    extra = 0
-    readonly_fields = ['id']
-    fields = ['field_name', 'field_value']
-
-
 @admin.register(Entry)
 class EntryAdmin(TombstoneOnDeleteAdmin, ModelAdmin):
     list_display = ['title', 'cashbook', 'entry_type', 'amount_minor', 'currency', 'category', 'payment_method', 'entry_date', 'created_by']
@@ -123,7 +116,7 @@ class EntryAdmin(TombstoneOnDeleteAdmin, ModelAdmin):
     search_fields = ['title', 'remarks', 'cashbook__book_name', 'created_by__email']
     readonly_fields = ['id', 'currency', 'created_at', 'updated_at']
     date_hierarchy = 'entry_date'
-    inlines = [EntryBillsInline, EntryExtraFieldsInline]
+    inlines = [EntryBillsInline]
     
     fieldsets = (
         ('Entry Information', {
@@ -133,7 +126,7 @@ class EntryAdmin(TombstoneOnDeleteAdmin, ModelAdmin):
             'fields': ('category', 'payment_method', 'created_by')
         }),
         ('Details', {
-            'fields': ('remarks', 'entry_date')
+            'fields': ('remarks', 'entry_date', 'custom_values')
         }),
         ('Timestamps', {
             'fields': ('created_at', 'updated_at'),
@@ -175,12 +168,14 @@ class EntryBillsAdmin(TombstoneOnDeleteAdmin, ModelAdmin):
         return qs.select_related('entry', 'entry__cashbook', 'created_by')
 
 
-@admin.register(EntryExtraFields)
-class EntryExtraFieldsAdmin(ModelAdmin):
-    list_display = ['field_name', 'field_value', 'entry']
-    search_fields = ['field_name', 'field_value', 'entry__title']
-    readonly_fields = ['id']
-    
+@admin.register(EntryField)
+class EntryFieldAdmin(TombstoneOnDeleteAdmin, ModelAdmin):
+    list_display = ['name', 'cashbook', 'kind', 'required', 'show_in_list', 'position', 'deleted_at']
+    list_filter = ['kind', 'required', 'show_in_list']
+    search_fields = ['name', 'cashbook__book_name']
+    readonly_fields = ['id', 'workspace', 'kind', 'created_at', 'updated_at']
+    fields = ['id', 'workspace', 'cashbook', 'name', 'kind', 'options', 'required', 'show_in_list', 'position',
+              'created_at', 'updated_at']
+
     def get_queryset(self, request):
-        qs = super().get_queryset(request)
-        return qs.select_related('entry', 'entry__cashbook')
+        return super().get_queryset(request).select_related('cashbook')

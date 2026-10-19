@@ -144,6 +144,9 @@ python manage.py log_status                    # request logging health
   A PDF of a preset period is for every plan; Excel (`reports.excel`) and a custom report (`reports.custom_range`) are plan
   flags, refused with 402. A custom report has chosen dates and may be narrowed with `&type=expense,income` (or
   `cash_in,cash_out`) and `&category=<id>,<id>,none`; narrowed, it shows money in, money out and net, without balances. `X-Report-Reference` is the number printed in the footer and kept in the admin under Report downloads.
+  A cashbook's own fields are Excel columns after the balance, and a line under each entry's details in the PDF.
+- `/api/v1/cashbooks/<id>/entries/` takes `custom_values`, `{field id: text}`, for the book's own fields (synced
+  table `entry_fields`); a form sends it as JSON text. Changing values is Business only (`entries.custom_fields`, 402).
 - `/api/v1/billing/` the user's plan and what it gives, public plans, promo codes, offers. See [docs/billing.md](docs/billing.md).
 - `/health/` liveness; `/health/?db=1` also checks the database.
 

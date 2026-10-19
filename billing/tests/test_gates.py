@@ -6,9 +6,9 @@ from django.test import override_settings
 
 from billing.catalog.keys import F
 from billing.models import BillingSettings, FunnelEvent, UsageCounter
-from billing.testing import grant_plan, set_limit, set_mode, set_plan_value
+from billing.testing import grant_plan, set_flag, set_limit, set_mode, set_plan_value
 from cashbook import bill_samples
-from cashbook.models import CashBook, CashBookAdditionalMember, EntryBills
+from cashbook.models import CashBook, CashBookAdditionalMember, EntryBills, EntryField
 from ledger_personal.models import Account, Budget, Category
 from sync.models import SyncMutation
 from workspaces.models import Membership, Workspace
@@ -268,33 +268,77 @@ class SeatLimitTests(BillingTestCase):
 
 
 class CustomFieldTests(BillingTestCase):
+    """Fields of a book and their values are Business; the rest of an entry never waits on them."""
+
     def setUp(self):
         super().setUp()
+        grant_plan(self.alice, 'business')
+        self.downgrade = lambda: set_flag(self.alice, F.ENTRY_CUSTOM_FIELDS, False)
         self.book = CashBook.objects.create(workspace=self.shop, book_name='Till')
+        self.field = EntryField.objects.create(cashbook=self.book, name='Invoice', kind=EntryField.TEXT)
         self.entries = f'{BOOKS}{self.book.id}/entries/'
         self.entry = {'entry_type': 'cash_in', 'amount_minor': 5000, 'entry_date': '2026-10-01'}
+        self.values = {str(self.field.id): 'INV-7'}
 
-    def test_custom_fields_are_business_only_on_every_way_in(self):
-        created = self.alice_client.post(self.entries, self.entry, format='json')
+    def push_shop(self, mutation):
+        return self.push_one(mutation, workspace=self.shop)
+
+    def book_entry(self, **data):
+        return self.upsert('entries', cashbook_id=str(self.book.id), **self.entry, **data)
+
+    def test_rest_takes_values_on_business_only(self):
+        with_values = {**self.entry, 'custom_values': self.values}
+        created = self.alice_client.post(self.entries, with_values, format='json')
         self.assertEqual(created.status_code, 201, created.data)
+        self.assertEqual(created.data['custom_values'], self.values)
         entry_id = created.data['id']
-        field = {'field_name': 'Invoice', 'field_value': 'INV-7'}
 
-        grant_plan(self.alice, 'plus')
-        with_fields = {**self.entry, 'extra_fields_data': [field]}
-        self.assertEqual(self.alice_client.post(self.entries, with_fields, format='json').status_code, 402)
-        self.assertEqual(
-            self.alice_client.patch(f'{self.entries}{entry_id}/', {'extra_fields_data': [field]}, format='json').status_code,
-            402,
-        )
-        response = self.alice_client.post(f'{self.entries}{entry_id}/add-extra-field/', field, format='json')
+        self.downgrade()
+        response = self.alice_client.post(self.entries, with_values, format='json')
         self.assertEqual((response.status_code, response.data['feature']), (402, 'entries.custom_fields'))
-
-        grant_plan(self.alice, 'business')
-        self.assertEqual(self.alice_client.post(self.entries, with_fields, format='json').status_code, 201)
+        changed = {'custom_values': {str(self.field.id): 'INV-8'}}
+        self.assertEqual(self.alice_client.patch(f'{self.entries}{entry_id}/', changed, format='json').status_code, 402)
+        # Everything else about the entry, and resending what it holds, still goes through
         self.assertEqual(
-            self.alice_client.post(f'{self.entries}{entry_id}/add-extra-field/', field, format='json').status_code, 201,
+            self.alice_client.patch(
+                f'{self.entries}{entry_id}/', {'amount_minor': 6000, 'custom_values': self.values}, format='json',
+            ).status_code,
+            200,
         )
+
+    def test_sync_drops_values_of_a_new_entry_and_refuses_changing_them(self):
+        self.downgrade()
+        mutation = self.book_entry(custom_values=self.values)
+        result = self.push_shop(mutation)
+        # The sale is kept; only what the plan does not include is left out
+        self.assertApplied(result)
+        self.assertEqual(result['row']['custom_values'], {})
+        self.assertTrue(FunnelEvent.objects.filter(feature_key='entries.custom_fields').exists())
+
+        update = self.upsert('entries', mutation['row_id'], custom_values=self.values)
+        self.assertPlanLimit(self.push_shop(update), F.ENTRY_CUSTOM_FIELDS, 'feature')
+        self.assertApplied(self.push_shop(self.upsert('entries', mutation['row_id'], amount_minor=7000)))
+
+    def test_after_a_downgrade_values_stay_and_the_entry_stays_editable(self):
+        mutation = self.book_entry(custom_values=self.values)
+        self.assertApplied(self.push_shop(mutation))
+        self.downgrade()
+        result = self.push_shop(self.upsert('entries', mutation['row_id'], title='Sale', custom_values=self.values))
+        self.assertApplied(result)
+        self.assertEqual(result['row']['custom_values'], self.values)
+
+    def test_fields_are_made_and_changed_on_business_only_and_always_removed(self):
+        field = {'cashbook_id': str(self.book.id), 'name': 'Party', 'kind': 'text'}
+        self.downgrade()
+        self.assertPlanLimit(self.push_shop(self.upsert('entry_fields', **field)), F.ENTRY_CUSTOM_FIELDS, 'feature')
+        rename = self.upsert('entry_fields', str(self.field.id), name='Invoice no')
+        self.assertPlanLimit(self.push_shop(rename), F.ENTRY_CUSTOM_FIELDS, 'feature')
+        self.assertApplied(self.push_shop(self.delete('entry_fields', self.field.id)))
+        self.field.refresh_from_db()
+        self.assertIsNotNone(self.field.deleted_at)
+
+        set_flag(self.alice, F.ENTRY_CUSTOM_FIELDS, True)
+        self.assertApplied(self.push_shop(self.upsert('entry_fields', **field)))
 
 
 class AttachmentStorageTests(BillingTestCase):

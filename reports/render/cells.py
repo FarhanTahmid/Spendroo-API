@@ -1,11 +1,14 @@
 """How a raw cell reads as text. The PDF prints this; Excel keeps real values where it can."""
-from ..document import COUNT, DATE, MONEY, SHARE
+from datetime import date
+from decimal import Decimal
+
+from ..document import COUNT, DATE, MONEY, NUMBER, SHARE
 
 
 def text(words, column, value, table):
     if value is None or value == '':
         return ''
-    if column.kind == DATE:
+    if column.kind == DATE and isinstance(value, date):
         return words.date(value, short=True)
     if column.kind == MONEY:
         # A table in one currency names it once, in its heading
@@ -14,6 +17,8 @@ def text(words, column, value, table):
         return words.count(value)
     if column.kind == SHARE:
         return words.share(value)
+    if column.kind == NUMBER and isinstance(value, Decimal):
+        return words.digits(f'{value:,f}')
     return str(value)
 
 

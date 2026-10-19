@@ -13,6 +13,8 @@ TEXT = 'text'
 DATE = 'date'
 MONEY = 'money'
 COUNT = 'count'
+# A number a user typed, kept with the decimals they gave it
+NUMBER = 'number'
 SHARE = 'share'
 
 # How a money column is coloured
@@ -34,6 +36,9 @@ class Column:
     tone: str = TONE_PLAIN
     #: Share of the table's width, relative to the other columns
     width: float = 1.0
+    #: Printed as "label: value" under the column at this index instead of
+    #: as a column of its own, where a page has no room. Excel keeps it a column.
+    under: int | None = None
 
 
 @dataclass

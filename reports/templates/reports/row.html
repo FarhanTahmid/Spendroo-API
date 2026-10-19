@@ -1,1 +1,1 @@
-<tr class="{{ row.kind }}">{% for cell in row.cells %}<td class="{{ cell.kind }} {{ cell.tone }}">{{ cell.text }}</td>{% endfor %}</tr>
+<tr class="{{ row.kind }}">{% for cell in row.cells %}<td class="{{ cell.kind }} {{ cell.tone }}">{{ cell.text }}{% if cell.sub %}<span class="sub">{{ cell.sub }}</span>{% endif %}</td>{% endfor %}</tr>

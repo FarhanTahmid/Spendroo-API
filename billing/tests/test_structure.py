@@ -95,8 +95,8 @@ class EveryWritePathIsGatedTests(SimpleTestCase):
 
     def test_every_tenant_model_is_reachable_only_through_a_gated_table_or_view(self):
         synced = {table.model for table in TABLES.values()}
-        # Written only through cashbook/views/entry_viewset.py, which is gated
-        rest_only = {'cashbook.EntryExtraFields'}
+        # Models written only through a gated REST view; none today
+        rest_only = set()
         for app_label in TENANT_APPS:
             for model in apps.get_app_config(app_label).get_models():
                 if model._meta.label.endswith('Event'):

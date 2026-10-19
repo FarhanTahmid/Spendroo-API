@@ -142,12 +142,15 @@ class HistoryChangeSerializer(serializers.Serializer):
     field = serializers.CharField()
     before = serializers.JSONField(allow_null=True)
     after = serializers.JSONField(allow_null=True)
+    # A book's own field (field 'custom_value'): its name, and what kind of value it holds
+    name = serializers.CharField(required=False)
+    kind = serializers.CharField(required=False)
 
 
 class HistoryRowSerializer(serializers.Serializer):
     id = serializers.CharField()
     at = serializers.DateTimeField()
-    kind = serializers.ChoiceField(choices=['entry', 'cashbook', 'category', 'payment_method', 'access', 'member'])
+    kind = serializers.ChoiceField(choices=['entry', 'cashbook', 'category', 'payment_method', 'field', 'access', 'member'])
     action = serializers.ChoiceField(choices=['created', 'updated', 'deleted', 'restored'])
     object_id = serializers.UUIDField()
     cashbook = HistoryCashbookSerializer(allow_null=True)

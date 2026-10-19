@@ -17,14 +17,12 @@ from billing.api.guards import CashbookPlanGuard
 from billing.catalog.keys import F
 from workspaces.tenancy import TenantScopedMixin
 
-from .. import bill_files, bill_storage, bills
-from ..models import (
-    CashBook, Entry, EntryBills, EntryExtraFields
-)
+from .. import bill_files, bill_storage, bills, custom_fields
+from ..models import CashBook, Entry, EntryBills
 from ..permissions import *
 from ..serializers import (
     EntryListSerializer, EntryDetailSerializer, EntryCreateUpdateSerializer,
-    EntryBillsSerializer, EntryExtraFieldsSerializer
+    EntryBillsSerializer,
 )
 
 # Room for the form fields around the largest file the server reads
@@ -91,8 +89,12 @@ class EntryViewSet(CashbookPlanGuard, TenantScopedMixin, viewsets.ModelViewSet):
         except bills.BillConflict:
             raise BillIdTaken()
 
-    def require_custom_fields(self, cashbook, request):
-        if request.data.get('extra_fields_data'):
+    def require_custom_values(self, cashbook, serializer):
+        """Filling in the book's own fields is the plan feature; the rest of an entry is not."""
+        if 'custom_values' not in serializer.validated_data:
+            return
+        before = serializer.instance.custom_values if serializer.instance else {}
+        if custom_fields.values_changed(before, serializer.validated_data['custom_values']):
             gates.require(cashbook.workspace, F.ENTRY_CUSTOM_FIELDS)
 
     def get_serializer_class(self):
@@ -125,7 +127,7 @@ class EntryViewSet(CashbookPlanGuard, TenantScopedMixin, viewsets.ModelViewSet):
         
         return Entry.objects.filter(cashbook=cashbook).select_related(
             'category', 'payment_method', 'created_by'
-        ).prefetch_related('bills', 'extra_fields')
+        ).prefetch_related('bills')
     
     def list(self, request, *args, **kwargs):
         """
@@ -163,7 +165,7 @@ class EntryViewSet(CashbookPlanGuard, TenantScopedMixin, viewsets.ModelViewSet):
     def retrieve(self, request, *args, **kwargs):
         """
         Get detailed information of a single entry.
-        Includes bills and extra fields.
+        Includes bills and the book's field values.
         """
         instance = self.get_object()
         
@@ -194,7 +196,7 @@ class EntryViewSet(CashbookPlanGuard, TenantScopedMixin, viewsets.ModelViewSet):
         
         serializer = self.get_serializer(data=request.data)
         serializer.is_valid(raise_exception=True)
-        self.require_custom_fields(cashbook, request)
+        self.require_custom_values(cashbook, serializer)
 
         files = request.FILES.getlist('bills')
 
@@ -216,7 +218,7 @@ class EntryViewSet(CashbookPlanGuard, TenantScopedMixin, viewsets.ModelViewSet):
     def update(self, request, *args, **kwargs):
         """
         Update an existing entry.
-        Can update all fields including extra fields and bills.
+        Can update all fields including the book's field values and bills.
         """
         partial = kwargs.pop('partial', False)
         instance = self.get_object()
@@ -230,7 +232,7 @@ class EntryViewSet(CashbookPlanGuard, TenantScopedMixin, viewsets.ModelViewSet):
         
         serializer = self.get_serializer(instance, data=request.data, partial=partial)
         serializer.is_valid(raise_exception=True)
-        self.require_custom_fields(instance.cashbook, request)
+        self.require_custom_values(instance.cashbook, serializer)
 
         files = request.FILES.getlist('bills')
 
@@ -333,85 +335,3 @@ class EntryViewSet(CashbookPlanGuard, TenantScopedMixin, viewsets.ModelViewSet):
         bill = get_object_or_404(EntryBills, id=_uuid_or_404(bill_id), entry=entry)
         url, expires_at = bill_storage.link_for(bill, request.user)
         return Response({'url': url, 'expires_at': expires_at})
-
-    @action(detail=True, methods=['post'], url_path='add-extra-field')
-    def add_extra_field(self, request, cashbook_pk=None, pk=None):
-        """
-        Add an extra field to an existing entry.
-        """
-        entry = self.get_object()
-        
-        # Check edit permission
-        if not entry.cashbook.has_permission(request.user, 'edit'):
-            return Response(
-                {'error': 'You do not have permission to add extra fields to this entry'},
-                status=status.HTTP_403_FORBIDDEN
-            )
-        gates.require(entry.workspace, F.ENTRY_CUSTOM_FIELDS)
-
-        serializer = EntryExtraFieldsSerializer(data=request.data)
-        serializer.is_valid(raise_exception=True)
-        extra_field = serializer.save(entry=entry)
-        
-        return Response(
-            {
-                'message': 'Extra field added successfully',
-                'extra_field': EntryExtraFieldsSerializer(extra_field).data
-            },
-            status=status.HTTP_201_CREATED
-        )
-    
-    @action(detail=True, methods=['put', 'patch'], url_path='update-extra-field/(?P<field_id>[^/.]+)')
-    def update_extra_field(self, request, cashbook_pk=None, pk=None, field_id=None):
-        """
-        Update an extra field of an entry.
-        """
-        entry = self.get_object()
-        
-        # Check edit permission
-        if not entry.cashbook.has_permission(request.user, 'edit'):
-            return Response(
-                {'error': 'You do not have permission to update extra fields'},
-                status=status.HTTP_403_FORBIDDEN
-            )
-        gates.require(entry.workspace, F.ENTRY_CUSTOM_FIELDS)
-
-        extra_field = get_object_or_404(EntryExtraFields, id=field_id, entry=entry)
-
-        serializer = EntryExtraFieldsSerializer(
-            extra_field,
-            data=request.data, 
-            partial=request.method == 'PATCH'
-        )
-        serializer.is_valid(raise_exception=True)
-        updated_field = serializer.save()
-        
-        return Response(
-            {
-                'message': 'Extra field updated successfully',
-                'extra_field': EntryExtraFieldsSerializer(updated_field).data
-            },
-            status=status.HTTP_200_OK
-        )
-    
-    @action(detail=True, methods=['delete'], url_path='remove-extra-field/(?P<field_id>[^/.]+)')
-    def remove_extra_field(self, request, cashbook_pk=None, pk=None, field_id=None):
-        """
-        Remove an extra field from an entry.
-        """
-        entry = self.get_object()
-        
-        # Check edit permission
-        if not entry.cashbook.has_permission(request.user, 'edit'):
-            return Response(
-                {'error': 'You do not have permission to remove extra fields'},
-                status=status.HTTP_403_FORBIDDEN
-            )
-        
-        extra_field = get_object_or_404(EntryExtraFields, id=field_id, entry=entry)
-        extra_field.soft_delete()
-        
-        return Response(
-            {'message': 'Extra field removed successfully'},
-            status=status.HTTP_200_OK
-        )

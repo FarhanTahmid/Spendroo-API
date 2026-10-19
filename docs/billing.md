@@ -184,6 +184,27 @@ the file endpoint checks again that the person may still see the book. In
 production, let the reverse proxy take bodies of 51 MB
 (`client_max_body_size`).
 
+## Custom fields
+
+`entries.custom_fields` (Business) lets a business add its own fields to a
+cashbook's entries: text, number, date or a choice. The fields are rows of
+`entry_fields` (`cashbook/models.py` `EntryField`), set up by whoever may
+manage the book; each entry keeps its values in `custom_values`,
+`{field id: text}`. `cashbook/custom_fields.py` says what fits each kind.
+
+| What | Without the flag |
+|---|---|
+| Make or change a field | refused (402, or `plan_limit` on sync) |
+| Remove a field | allowed, so a downgrade can still tidy up |
+| A new entry with values, through sync | kept, without its values: a refused create would be dropped on the phone |
+| Changing an entry's values | refused; the rest of the entry still saves |
+| Reading values, reports | unchanged: what was filled in stays visible |
+
+Only values that change are checked, so a field deleted or an option removed
+later never stops an old entry from being edited. Whether a field is required
+is asked by the app only, for the same reason. A book holds at most 20
+fields; the last one pinned (`show_in_list`) is the one the entry list shows.
+
 ## Not built yet
 
 - Store purchases. `billing/providers/base.py` is the interface a store

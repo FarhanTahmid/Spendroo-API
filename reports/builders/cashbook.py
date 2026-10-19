@@ -1,10 +1,13 @@
 """One cashbook: what it held, where money came from and went, entry by entry."""
+from datetime import date
+from decimal import Decimal, InvalidOperation
+
 from django.db.models import Count, Q, Sum
 
-from cashbook.models import Entry
+from cashbook.models import Entry, EntryField
 
 from .. import narrow as narrowing
-from ..document import DATE, MONEY, TONE_BALANCE, TONE_IN, TONE_OUT, Column, Money, Table, Totals, net
+from ..document import DATE, MONEY, NUMBER, TEXT, TONE_BALANCE, TONE_IN, TONE_OUT, Column, Money, Table, Totals, net
 from ..models import SCOPE_CASHBOOK
 from .common import alive_name, in_out_table, money
 
@@ -82,9 +85,32 @@ def _alive(row, field):
     return getattr(row, field) if row is not None and row.deleted_at is None else ''
 
 
+FIELD_KINDS = {EntryField.NUMBER: NUMBER, EntryField.DATE: DATE}
+# The Details column, which the PDF prints a book's own fields under
+DETAILS = 1
+
+
+def _typed(field, raw):
+    """A field's value as the report shows it: a number or date where it reads as one, else as kept."""
+    if not raw:
+        return None
+    try:
+        if field.kind == EntryField.NUMBER:
+            return Decimal(raw)
+        if field.kind == EntryField.DATE:
+            return date.fromisoformat(raw)
+    except (InvalidOperation, ValueError):
+        pass
+    return raw
+
+
 def entries_table(words, book, period, numbers, narrow=narrowing.EVERYTHING, title=None):
-    """Entry by entry. Showing every entry, each carries the balance after it."""
+    """
+    Entry by entry. Showing every entry, each carries the balance after it.
+    The book's own fields come last, so a book without any keeps its shape.
+    """
     currency = book.currency
+    fields = list(EntryField.objects.filter(cashbook=book))
     opening, cash_in, cash_out, closing = numbers
     running = not narrow.active
     lines = (
@@ -104,8 +130,10 @@ def entries_table(words, book, period, numbers, narrow=narrowing.EVERYTHING, tit
             Money(line.amount_minor, currency) if incoming else None,
             None if incoming else Money(line.amount_minor, currency),
             *([Money(balance, currency)] if running else []),
+            *[_typed(field, (line.custom_values or {}).get(str(field.id))) for field in fields],
         ])
     sums = [money(cash_in, currency), money(cash_out, currency)]
+    blank = [None] * len(fields)
     return Table(
         title=title or words.t('table.entries'), currency=currency, is_detail=True, empty=words.t('empty.entries'),
         columns=[
@@ -117,15 +145,16 @@ def entries_table(words, book, period, numbers, narrow=narrowing.EVERYTHING, tit
             Column(words.t('col.in'), MONEY, TONE_IN, width=1.45),
             Column(words.t('col.out'), MONEY, TONE_OUT, width=1.45),
             *([Column(words.t('col.balance'), MONEY, TONE_BALANCE, width=1.55)] if running else []),
+            *[Column(field.name, FIELD_KINDS.get(field.kind, TEXT), width=1.6, under=DETAILS) for field in fields],
         ],
         first=(
-            [period.date_from, words.t('row.opening'), '', '', '', None, None, Money(opening, currency)]
+            [period.date_from, words.t('row.opening'), '', '', '', None, None, Money(opening, currency), *blank]
             if running else None
         ),
         rows=rows,
         total=(
-            [period.date_to, words.t('row.closing'), '', '', '', *sums, Money(closing, currency)] if running
-            else ([None, words.t('row.total'), '', '', '', *sums] if rows else None)
+            [period.date_to, words.t('row.closing'), '', '', '', *sums, Money(closing, currency), *blank] if running
+            else ([None, words.t('row.total'), '', '', '', *sums, *blank] if rows else None)
         ),
     )
 
