@@ -54,7 +54,9 @@ VALUES = {
     F.TEAM_SEATS: (0, 0, 5),
     F.AUDIT_TRAIL: (False, False, True),
     F.ENTRY_CUSTOM_FIELDS: (False, False, True),
-    F.STORAGE_ATTACHMENTS_MB: (0, 1024, 10240),
+    F.STORAGE_ATTACHMENTS_MB: (10, 1024, 10240),
+    F.STORAGE_ATTACHMENT_FILE_MB: (2, 20, 50),
+    F.STORAGE_ATTACHMENT_PDF: (False, True, True),
 
     F.REPORTS_EXCEL: (False, True, True),
     F.REPORTS_CUSTOM_RANGE: (False, True, True),

@@ -10,7 +10,7 @@ from django.utils import timezone
 
 from billing.catalog.keys import F
 from billing.sync_gates import NO_GATES, Flag, Limit, Lock
-from cashbook.models import CashBook, CashBookAdditionalMember, Entry, EntryCategory, PaymentMethod
+from cashbook.models import CashBook, CashBookAdditionalMember, Entry, EntryBills, EntryCategory, PaymentMethod
 from ledger_personal import allocations
 from ledger_personal import goals as goal_math
 from ledger_personal.models import Account, Budget, Category, SavingsGoal, Transaction
@@ -108,6 +108,24 @@ class CashBookChildTable(SyncTable):
     def can_write(self, user, role, obj, op):
         permission = (op == 'create' and self.create_permission) or self.required_permission
         return obj.cashbook.has_permission(user, permission)
+
+
+class EntryBillTable(CashBookChildTable):
+    """
+    Bills of entries, so every phone knows which entries have one even
+    offline. Added and removed only through the REST API (cashbook/bills.py),
+    which checks the file and counts storage; clients only read them.
+    """
+    read_only = [
+        'entry_id', 'cashbook_id', 'created_by_id', 'content_type', 'original_name', 'size_bytes',
+        'page_count', 'width', 'height',
+    ]
+    plan_gates = NO_GATES
+    client_creates = False
+    client_deletes = False
+
+    def can_write(self, user, role, obj, op):
+        return False
 
 
 def accessible_cashbook_ids(user, role):
@@ -338,6 +356,7 @@ TABLES = {
         EntryCategoryTable('entry_categories', EntryCategory),
         PaymentMethodTable('payment_methods', PaymentMethod),
         EntryTable('entries', Entry),
+        EntryBillTable('entry_bills', EntryBills),
         CashBookMemberTable('cashbook_members', CashBookAdditionalMember),
         AccountTable('accounts', Account),
         SavingsGoalTable('savings_goals', SavingsGoal),

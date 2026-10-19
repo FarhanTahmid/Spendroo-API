@@ -1,12 +1,13 @@
 import shutil
 import tempfile
 
-from django.core.files.uploadedfile import SimpleUploadedFile
+from django.conf import settings as django_settings
 from django.test import override_settings
 
 from billing.catalog.keys import F
 from billing.models import BillingSettings, FunnelEvent, UsageCounter
 from billing.testing import grant_plan, set_limit, set_mode, set_plan_value
+from cashbook import bill_samples
 from cashbook.models import CashBook, CashBookAdditionalMember, EntryBills
 from ledger_personal.models import Account, Budget, Category
 from sync.models import SyncMutation
@@ -297,64 +298,77 @@ class CustomFieldTests(BillingTestCase):
 
 
 class AttachmentStorageTests(BillingTestCase):
+    """The gate's side of bills; cashbook/tests_bills.py covers the files themselves."""
+
     def setUp(self):
         super().setUp()
         self.media = tempfile.mkdtemp()
         self.addCleanup(shutil.rmtree, self.media, ignore_errors=True)
-        settings = override_settings(MEDIA_ROOT=self.media)
+        storages = {
+            **django_settings.STORAGES,
+            'bills': {'BACKEND': 'django.core.files.storage.FileSystemStorage', 'OPTIONS': {'location': self.media}},
+        }
+        settings = override_settings(STORAGES=storages)
         settings.enable()
         self.addCleanup(settings.disable)
         self.book = CashBook.objects.create(workspace=self.shop, book_name='Till')
         self.entries = f'{BOOKS}{self.book.id}/entries/'
         self.entry = {'entry_type': 'cash_in', 'amount_minor': 5000, 'entry_date': '2026-10-01'}
 
-    def bill(self, size=2048, name='bill.pdf'):
-        return SimpleUploadedFile(name, b'x' * size, content_type='application/pdf')
+    def photo(self, name='bill.jpg', noisy=False):
+        return bill_samples.upload(bill_samples.noisy_jpeg() if noisy else bill_samples.jpeg(), name)
 
     def used(self):
         counter = UsageCounter.objects.filter(user=self.alice, feature_key='storage.attachments_mb').first()
         return counter.used if counter else 0
 
-    def test_free_has_no_attachments_and_the_entry_is_not_half_saved(self):
-        response = self.alice_client.post(self.entries, {**self.entry, 'bills': self.bill()}, format='multipart')
+    def test_free_keeps_photos_but_no_pdfs_and_the_entry_is_not_half_saved(self):
+        pdf = bill_samples.upload(bill_samples.pdf(), 'bill.pdf', 'application/pdf')
+        response = self.alice_client.post(self.entries, {**self.entry, 'bills': pdf}, format='multipart')
         self.assertEqual(response.status_code, 402, response.data)
-        self.assertEqual(response.data['feature'], 'storage.attachments_mb')
+        self.assertEqual(response.data['feature'], 'storage.attachment_pdf')
         self.assertFalse(self.book.entry_set.exists())
         self.assertEqual(self.used(), 0)
-        # Without a file the entry is fine
-        self.assertEqual(self.alice_client.post(self.entries, self.entry, format='json').status_code, 201)
+        # A photo is fine on Free
+        response = self.alice_client.post(self.entries, {**self.entry, 'bills': self.photo()}, format='multipart')
+        self.assertEqual(response.status_code, 201, response.data)
+        self.assertEqual(self.used(), response.data['bills'][0]['size_bytes'])
 
     def test_plus_counts_what_is_stored_and_gives_it_back_on_removal(self):
         grant_plan(self.alice, 'plus')
-        response = self.alice_client.post(self.entries, {**self.entry, 'bills': self.bill(2048)}, format='multipart')
+        response = self.alice_client.post(self.entries, {**self.entry, 'bills': self.photo()}, format='multipart')
         self.assertEqual(response.status_code, 201, response.data)
         entry_id = response.data['id']
-        self.assertEqual(self.used(), 2048)
-        self.assertEqual(self.entitlements()['features']['storage.attachments_mb']['used_bytes'], 2048)
+        first = response.data['bills'][0]['size_bytes']
+        self.assertEqual(self.used(), first)
+        self.assertEqual(self.entitlements()['features']['storage.attachments_mb']['used_bytes'], first)
 
         added = self.alice_client.post(
-            f'{self.entries}{entry_id}/add-bill/', {'bill_file': self.bill(1000)}, format='multipart',
+            f'{self.entries}{entry_id}/add-bill/', {'bill_file': bill_samples.upload(bill_samples.pdf(), 'b.pdf')},
+            format='multipart',
         )
         self.assertEqual(added.status_code, 201, added.data)
-        self.assertEqual(self.used(), 3048)
-        bill = EntryBills.objects.get(size_bytes=1000)
-        self.assertEqual(self.alice_client.delete(f'{self.entries}{entry_id}/remove-bill/{bill.id}/').status_code, 200)
-        self.assertEqual(self.used(), 2048)
+        second = added.data['bills'][0]
+        self.assertEqual(self.used(), first + second['size_bytes'])
+        self.assertEqual(
+            self.alice_client.delete(f'{self.entries}{entry_id}/remove-bill/{second["id"]}/').status_code, 200,
+        )
+        self.assertEqual(self.used(), first)
 
     def test_the_file_that_does_not_fit_is_refused_together_with_the_ones_before_it(self):
         grant_plan(self.alice, 'plus')
         set_limit(self.alice, F.STORAGE_ATTACHMENTS_MB, 1)
         entry_id = self.alice_client.post(self.entries, self.entry, format='json').data['id']
-        megabyte = 1024 * 1024
+        # Each is about 700 KB once stored: one fits in a megabyte, two do not
         response = self.alice_client.post(
             f'{self.entries}{entry_id}/add-bill/',
-            {'bill_file': [self.bill(megabyte - 10, 'a.pdf'), self.bill(100, 'b.pdf')]}, format='multipart',
+            {'bill_file': [self.photo('a.jpg', noisy=True), self.photo('b.jpg', noisy=True)]}, format='multipart',
         )
         self.assertEqual(response.status_code, 402, response.data)
         self.assertEqual(self.used(), 0)
-        self.assertFalse(EntryBills.objects.exists())
+        self.assertFalse(EntryBills.all_objects.exists())
         self.assertEqual(self.alice_client.post(
-            f'{self.entries}{entry_id}/add-bill/', {'bill_file': self.bill(megabyte - 10)}, format='multipart',
+            f'{self.entries}{entry_id}/add-bill/', {'bill_file': self.photo(noisy=True)}, format='multipart',
         ).status_code, 201)
 
 

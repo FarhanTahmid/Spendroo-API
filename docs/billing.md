@@ -155,6 +155,35 @@ set_mode('log_only')
    end date, and can be claimed once.
 7. `python manage.py billing_explain <email>` matches what the app shows.
 
+## Bill attachments
+
+Three keys hold bills (photos and PDFs on business entries) to the plan, all
+counted on the business owner:
+
+| Key | Free | Plus | Business |
+|---|---|---|---|
+| `storage.attachments_mb`: total kept | 10 MB | 1 GB | 10 GB |
+| `storage.attachment_file_mb`: one file | 2 MB | 20 MB | 50 MB |
+| `storage.attachment_pdf`: PDFs too | off | on | on |
+
+Every bill goes through `cashbook/bills.py`. It checks the file by its bytes
+(`cashbook/bill_files.py`): photos are decoded and written out again, so
+EXIF/GPS and anything glued on are dropped. PDFs are read with pypdf and
+refused if they hold scripts, launch actions, embedded files or a second
+file after `%%EOF`. Nothing over 50 MB is read on any plan. Removing a bill,
+its entry or its book gives the space back at once. The file is deleted after
+the commit, and `manage.py purge_bill_files` (also a daily task) sweeps up the
+rest.
+
+Files sit in the `bills` storage (`STORAGES` in settings), never under
+`MEDIA_ROOT`. Locally that is `Private_Files/bills` (`BILL_FILES_ROOT`). An
+object store takes over with `BILL_STORAGE_BACKEND` and
+`BILL_STORAGE_OPTIONS` (JSON). Phones fetch a file through a link good for
+five minutes (`…/bills/<id>/link/`, then `/api/v1/bills/file/<token>/`), and
+the file endpoint checks again that the person may still see the book. In
+production, let the reverse proxy take bodies of 51 MB
+(`client_max_body_size`).
+
 ## Not built yet
 
 - Store purchases. `billing/providers/base.py` is the interface a store

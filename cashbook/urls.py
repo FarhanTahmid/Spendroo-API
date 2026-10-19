@@ -6,6 +6,7 @@ from .views.entry_viewset import EntryViewSet
 from .views.entry_category_viewset import EntryCategoryViewSet
 from .views.payment_method_viewset import PaymentMethodViewSet
 from .views.cashbook_stats_viewset import CashBookStatsViewSet
+from .views.bill_file_view import BillFileView
 
 # Main router for cashbook-level resources
 router = routers.DefaultRouter()
@@ -71,4 +72,7 @@ urlpatterns = [
     path('', include(categories_router.urls)),
     path('', include(payment_methods_router.urls)),
     path('', include(stats_router.urls)),
+
+    # A bill's file, through a signed link the app asked for (cashbook/bill_storage.py)
+    path('bills/file/<str:token>/', BillFileView.as_view(), name='bill-file'),
 ]

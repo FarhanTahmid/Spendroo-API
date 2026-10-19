@@ -147,3 +147,6 @@ openapi.yml
 
 # Keys kept beside the code on a developer machine (FCM_CREDENTIALS_FILE)
 /secrets/
+
+# Bills attached to entries (BILL_FILES_ROOT)
+Private_Files/

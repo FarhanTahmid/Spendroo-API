@@ -78,6 +78,12 @@ class F:
     STORAGE_ATTACHMENTS_MB = FeatureKey(
         'storage.attachments_mb', LIMIT, 'Bill attachments', 'Total size of attached files.', unit='MB',
     )
+    STORAGE_ATTACHMENT_FILE_MB = FeatureKey(
+        'storage.attachment_file_mb', LIMIT, 'Largest bill', 'Size of one attached file.', unit='MB',
+    )
+    STORAGE_ATTACHMENT_PDF = FeatureKey(
+        'storage.attachment_pdf', FLAG, 'PDF bills', 'Attach PDFs as well as photos.',
+    )
 
     # Reports to download (reports/). A PDF of a preset period is for every plan.
     REPORTS_EXCEL = FeatureKey(

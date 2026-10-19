@@ -1,10 +1,11 @@
 import pghistory
 from django.conf import settings
 from django.db import models, transaction
-from django.core.validators import FileExtensionValidator
 from django.db.models import F, Q, Sum
 
 from workspaces.models import AliveManager, Membership, WorkspaceOwnedModel, hex_color
+
+from .bill_storage import get_bill_storage
 
 
 class CashBookQuerySet(models.QuerySet):
@@ -78,8 +79,10 @@ class CashBook(WorkspaceOwnedModel):
             stamp = {'deleted_at': self.deleted_at, 'updated_at': self.deleted_at, 'version': F('version') + 1}
             for model in (Entry, EntryCategory, PaymentMethod, CashBookAdditionalMember):
                 model.all_objects.filter(cashbook=self, deleted_at__isnull=True).update(**stamp)
-            for model in (EntryBills, EntryExtraFields):
-                model.all_objects.filter(entry__cashbook=self, deleted_at__isnull=True).update(**stamp)
+            EntryExtraFields.all_objects.filter(entry__cashbook=self, deleted_at__isnull=True).update(**stamp)
+            # Bills also give the owner's storage back and leave the disk
+            from .bills import discard
+            discard(EntryBills.all_objects.filter(cashbook=self))
 
     def get_balance(self):
         """Calculate current balance in minor units"""
@@ -275,6 +278,13 @@ class Entry(WorkspaceOwnedModel):
         self.currency = self.cashbook.currency
         super().save(*args, **kwargs)
 
+    def soft_delete(self):
+        """Through the API or a phone's sync alike: the entry's bills go with it."""
+        from .bills import discard
+        with transaction.atomic():
+            super().soft_delete()
+            discard(EntryBills.all_objects.filter(entry=self))
+
 
 def get_user_bill_filepath(instance, filename):
     entry = instance.entry
@@ -282,36 +292,53 @@ def get_user_bill_filepath(instance, filename):
 
 
 class EntryBills(WorkspaceOwnedModel):
-    allowed_extensions = ['pdf', 'jpg', 'jpeg', 'png']
-
+    """
+    A photo or PDF kept with an entry as proof. Added and removed only through
+    cashbook/bills.py, which checks the file and counts it against the owner's
+    storage. Phones get these rows by sync (read-only) and each file through a
+    signed link (cashbook/bill_storage.py).
+    """
     entry = models.ForeignKey(Entry, on_delete=models.CASCADE, related_name='bills')
+    # The entry's book, kept here so sync can narrow bills to the books a member sees
+    cashbook = models.ForeignKey(CashBook, on_delete=models.CASCADE, related_name='bills', editable=False)
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True, related_name='bills_added',
+    )
 
     bill_file = models.FileField(
         null=False,
         blank=False,
         upload_to=get_user_bill_filepath,
+        storage=get_bill_storage,
         # The folder alone is about 150 characters (three ids); the default of 100 fits no file
         max_length=300,
-        validators=[
-            FileExtensionValidator(
-                allowed_extensions=allowed_extensions,
-                message='Please upload a valid file. Allowed formats are: %(allowed_extensions)s'
-            )
-        ]
     )
+    # What the bytes proved the file to be (cashbook/bill_files.py), never what the phone said
+    content_type = models.CharField(max_length=40, default='', editable=False)
+    # Shown to people only; the stored file is named after the bill's id
+    original_name = models.CharField(max_length=120, blank=True, default='', editable=False)
     # Counted against the owner's attachment storage, and given back on removal
     size_bytes = models.PositiveBigIntegerField(default=0, editable=False)
+    # Pages of a PDF; width and height of a photo, or of a PDF's first page in points
+    page_count = models.PositiveIntegerField(null=True, blank=True, editable=False)
+    width = models.PositiveIntegerField(null=True, blank=True, editable=False)
+    height = models.PositiveIntegerField(null=True, blank=True, editable=False)
 
     class Meta:
         verbose_name = "Bill of Entry"
         verbose_name_plural = "Bills of Entries"
-        ordering = ['-created_at']
+        ordering = ['created_at']
 
     def __str__(self):
         return f"Bill for {self.entry.title or self.entry.id}"
 
     def get_parent_workspace_id(self):
         return self.entry.workspace_id
+
+    def save(self, *args, **kwargs):
+        if self.cashbook_id is None:
+            self.cashbook_id = self.entry.cashbook_id
+        super().save(*args, **kwargs)
 
 
 class EntryExtraFields(WorkspaceOwnedModel):

@@ -2,6 +2,7 @@
 Base Django settings for spendroo project.
 
 """
+import json
 import os
 import base64
 import hashlib
@@ -219,6 +220,21 @@ STATIC_ROOT = os.path.join(BASE_DIR, 'staticfiles')
 MEDIA_ROOT = os.path.join(BASE_DIR, 'Media_Files/')
 MEDIA_URL = "/media_files/"
 
+# Bills attached to entries are private: never under MEDIA_ROOT, which DEBUG
+# serves to anyone. The app fetches each file through a short-lived signed
+# link (cashbook/bill_storage.py). An object store (S3, R2) takes over by
+# naming its backend and options here; no code changes.
+BILL_FILES_ROOT = config('BILL_FILES_ROOT', default=os.path.join(BASE_DIR, 'Private_Files', 'bills'))
+STORAGES = {
+    'default': {'BACKEND': 'django.core.files.storage.FileSystemStorage'},
+    'staticfiles': {'BACKEND': 'django.contrib.staticfiles.storage.StaticFilesStorage'},
+    'bills': {
+        'BACKEND': config('BILL_STORAGE_BACKEND', default='django.core.files.storage.FileSystemStorage'),
+        'OPTIONS': json.loads(config('BILL_STORAGE_OPTIONS', default='')) if config('BILL_STORAGE_OPTIONS', default='')
+        else {'location': BILL_FILES_ROOT},
+    },
+}
+
 AUTH_PASSWORD_VALIDATORS = [
     {
         'NAME': 'django.contrib.auth.password_validation.UserAttributeSimilarityValidator',
@@ -289,6 +305,10 @@ REST_FRAMEWORK = {
         'billing_events': '300/hour',
         # Each one lays out a whole document
         'reports': '30/hour',
+        # Every photo is decoded and written out again
+        'bill_upload': '120/hour',
+        # Signed links carry no session, so this counts by address
+        'bill_file': '1200/hour',
     },
     'DEFAULT_SCHEMA_CLASS': 'drf_spectacular.openapi.AutoSchema',
     # DRF's own, plus a note of every plan refusal for the admin dashboard

@@ -20,6 +20,8 @@ psycopg[binary]==3.3.6
 PyJWT==2.15.1
 requests==2.32.4
 pillow==11.3.0
+# Reads attached PDF bills to refuse scripts and embedded files (cashbook/bill_files.py)
+pypdf==6.1.1
 argon2-cffi==25.1.0
 cryptography==50.0.2
 python-decouple==3.8

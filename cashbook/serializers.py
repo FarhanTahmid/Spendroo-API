@@ -54,10 +54,15 @@ class PaymentMethodSerializer(serializers.ModelSerializer):
 
 
 class EntryBillsSerializer(serializers.ModelSerializer):
+    """What the app shows of a bill. Never the file's path: the file is fetched through a signed link."""
     class Meta:
         model = EntryBills
-        fields = ['id', 'bill_file', 'created_at']
-        read_only_fields = ['id', 'created_at']
+        fields = [
+            'id', 'workspace_id', 'entry_id', 'cashbook_id', 'created_by_id', 'content_type', 'original_name',
+            'size_bytes', 'page_count', 'width', 'height', 'version', 'server_seq', 'created_at', 'updated_at',
+            'deleted_at',
+        ]
+        read_only_fields = fields
 
 
 class EntryExtraFieldsSerializer(serializers.ModelSerializer):

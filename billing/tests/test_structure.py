@@ -29,10 +29,11 @@ ENFORCED_BY_THE_SERVER = {
     F.RECURRING_TRANSACTIONS, F.REMINDERS_STANDALONE, F.SAVINGS_GOALS,
     F.BUSINESS_WORKSPACES, F.BUSINESS_CASHBOOKS, F.TEAM_SEATS,
     F.REPORTS_EXCEL, F.REPORTS_CUSTOM_RANGE, F.ENTRY_CUSTOM_FIELDS, F.STORAGE_ATTACHMENTS_MB,
+    F.STORAGE_ATTACHMENT_FILE_MB, F.STORAGE_ATTACHMENT_PDF,
     F.INSIGHTS_TREND_MONTHS, F.INSIGHTS_YEAR_REVIEW, F.AUDIT_TRAIL,
 }
 # Limits on a size (megabytes, months), checked where it is asked for rather than by counting rows
-NOT_ROW_COUNTS = {F.STORAGE_ATTACHMENTS_MB, F.INSIGHTS_TREND_MONTHS}
+NOT_ROW_COUNTS = {F.STORAGE_ATTACHMENTS_MB, F.STORAGE_ATTACHMENT_FILE_MB, F.INSIGHTS_TREND_MONTHS}
 # Metered by gates.take / gates.consume; the features that spend them come later
 METERED_FOR_LATER = {F.AI_CREDITS, F.STATEMENT_PDF_PAGES}
 # Shown or hidden by the app from data it already holds; nothing reaches the server
@@ -95,7 +96,7 @@ class EveryWritePathIsGatedTests(SimpleTestCase):
     def test_every_tenant_model_is_reachable_only_through_a_gated_table_or_view(self):
         synced = {table.model for table in TABLES.values()}
         # Written only through cashbook/views/entry_viewset.py, which is gated
-        rest_only = {'cashbook.EntryBills', 'cashbook.EntryExtraFields'}
+        rest_only = {'cashbook.EntryExtraFields'}
         for app_label in TENANT_APPS:
             for model in apps.get_app_config(app_label).get_models():
                 if model._meta.label.endswith('Event'):

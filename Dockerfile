@@ -18,8 +18,8 @@ COPY . .
 
 # Runs as an unprivileged user; logs and uploads are the only writable paths
 RUN useradd --create-home app \
-    && mkdir -p logs Media_Files staticfiles \
-    && chown -R app:app logs Media_Files staticfiles
+    && mkdir -p logs Media_Files Private_Files/bills staticfiles \
+    && chown -R app:app logs Media_Files Private_Files staticfiles
 USER app
 
 EXPOSE 8000
