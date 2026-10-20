@@ -90,6 +90,11 @@ def _forget_access():
         _access = (None, 0)
 
 
+def _text(data):
+    # Everything in `data` is text for Firebase
+    return {key: '' if value is None else str(value) for key, value in (data or {}).items()}
+
+
 def send(token, title, body, data=None):
     """
     One notification to one phone. Answers SENT, GONE, SKIPPED or REFUSED;
@@ -99,13 +104,33 @@ def send(token, title, body, data=None):
     if account is None:
         logger.info('Push not sent, no FCM credentials: %s', title)
         return SKIPPED
-    message = {
+    return _post(account, {
         'token': token,
         'notification': {'title': title, **({'body': body} if body else {})},
-        # Everything in `data` is text for Firebase
-        'data': {key: '' if value is None else str(value) for key, value in (data or {}).items()},
+        'data': _text(data),
         'android': {'priority': 'high', 'notification': {'channel_id': CHANNEL}},
-    }
+    })
+
+
+def send_data(token, data, *, collapse_key, ttl):
+    """
+    A silent message for the app itself: nothing is shown. Normal priority, so
+    a sleeping phone gets it at its next wake rather than being woken for it,
+    and one waiting under the same `collapse_key` is replaced, not added to.
+    `ttl` is in seconds. Answers as send() does.
+    """
+    account = _credentials()
+    if account is None:
+        logger.info('Data push not sent, no FCM credentials: %s', collapse_key)
+        return SKIPPED
+    return _post(account, {
+        'token': token,
+        'data': _text(data),
+        'android': {'priority': 'normal', 'collapse_key': collapse_key, 'ttl': f'{int(ttl)}s'},
+    })
+
+
+def _post(account, message):
     try:
         response = requests.post(
             SEND_URL.format(project=account['project_id']), timeout=TIMEOUT, json={'message': message},

@@ -283,6 +283,18 @@ class SenderTests(SimpleTestCase):
         })
         self.assertEqual(second.kwargs['json']['message']['notification'], {'title': 'Again'})
 
+    def test_a_silent_message_shows_nothing_and_waits_for_the_phone_to_wake(self):
+        token = self.answer(200, {'access_token': 'ya29.x', 'expires_in': 3600})
+        gone = self.answer(404, {'error': {'status': 'NOT_FOUND', 'details': [{'errorCode': 'UNREGISTERED'}]}})
+        with mock.patch.object(push.requests, 'post', side_effect=[token, self.answer(200, {}), gone]) as post:
+            data = {'kind': 'widgets', 'seq': 41}
+            self.assertEqual(push.send_data('phone', data, collapse_key='widgets:shop', ttl=21600), push.SENT)
+            self.assertEqual(push.send_data('phone', data, collapse_key='widgets:shop', ttl=21600), push.GONE)
+        self.assertEqual(post.call_args_list[1].kwargs['json']['message'], {
+            'token': 'phone', 'data': {'kind': 'widgets', 'seq': '41'},
+            'android': {'priority': 'normal', 'collapse_key': 'widgets:shop', 'ttl': '21600s'},
+        })
+
     def test_firebases_answers_are_told_apart(self):
         token = self.answer(200, {'access_token': 'ya29.x', 'expires_in': 3600})
         gone = self.answer(404, {'error': {'status': 'NOT_FOUND', 'details': [{'errorCode': 'UNREGISTERED'}]}})

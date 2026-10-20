@@ -36,13 +36,14 @@ class DeviceView(APIView):
         serializer.is_valid(raise_exception=True)
         data = serializer.validated_data
         # A phone has one row: whoever signs in on it last is the one it rings for
-        Device.objects.update_or_create(
-            fcm_token=data['token'],
-            defaults={
-                'user': request.user, 'platform': data['platform'], 'locale': data['locale'],
-                'timezone': data['timezone'], 'app_version': data['app_version'], 'last_seen_at': timezone.now(),
-            },
-        )
+        defaults = {
+            'user': request.user, 'platform': data['platform'], 'locale': data['locale'],
+            'timezone': data['timezone'], 'app_version': data['app_version'], 'last_seen_at': timezone.now(),
+        }
+        for name in ('widget_workspaces', 'widget_books'):
+            if name in data:
+                defaults[name] = sorted(set(data[name]))
+        Device.objects.update_or_create(fcm_token=data['token'], defaults=defaults)
         if data['timezone']:
             # "Today", and the hour of a reminder, are read where the phone is
             UserSettings.objects.update_or_create(user=request.user, defaults={'timezone': data['timezone']})

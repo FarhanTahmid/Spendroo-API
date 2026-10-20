@@ -67,6 +67,10 @@ class F:
         'Goals in use at one time. Archived goals do not count.',
     )
     HOME_WIDGET = FeatureKey('widget.home', FLAG, 'Home-screen widget')
+    BUSINESS_WIDGET = FeatureKey(
+        'widget.business', FLAG, 'Business home-screen widgets',
+        'The large business and cashbook widgets: charts, insights and the period switcher. Small sizes are for every plan.',
+    )
 
     # Business
     BUSINESS_WORKSPACES = FeatureKey(

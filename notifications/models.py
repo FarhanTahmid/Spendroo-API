@@ -2,6 +2,7 @@ import uuid
 from datetime import time
 
 from django.conf import settings
+from django.contrib.postgres.fields import ArrayField
 from django.db import models
 from django.utils.timezone import now
 
@@ -105,6 +106,10 @@ class Device(models.Model):
     locale = models.CharField(max_length=10, default='en')
     timezone = models.CharField(max_length=64, blank=True, default='')
     app_version = models.CharField(max_length=40, blank=True, default='')
+    # What its home-screen widgets show: businesses (whole) and single cashbooks.
+    # A change there reaches the phone as a silent push (notifications/widgets.py)
+    widget_workspaces = ArrayField(models.UUIDField(), blank=True, default=list)
+    widget_books = ArrayField(models.UUIDField(), blank=True, default=list)
     created_at = models.DateTimeField(auto_now_add=True)
     last_seen_at = models.DateTimeField(default=now)
 
@@ -113,6 +118,19 @@ class Device(models.Model):
 
     def __str__(self):
         return f'{self.platform} of {self.user_id}'
+
+
+class WidgetPulse(models.Model):
+    """
+    The last time a business's widgets were told of its changes, and how far
+    those went (a server_seq): the next telling covers what came after.
+    """
+    workspace = models.OneToOneField('workspaces.Workspace', on_delete=models.CASCADE, primary_key=True)
+    seq = models.BigIntegerField(default=0)
+    sent_at = models.DateTimeField(null=True, blank=True)
+
+    def __str__(self):
+        return f'widgets of {self.workspace_id} at {self.seq}'
 
 
 class NotificationPreference(models.Model):

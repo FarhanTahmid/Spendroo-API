@@ -3,7 +3,7 @@ from django.conf import settings
 from django.core.mail import EmailMultiAlternatives, get_connection
 from procrastinate.contrib.django import app
 
-from . import delivery
+from . import delivery, widgets
 from .email_handler import EmailHandler
 from .push import PushError
 
@@ -43,3 +43,9 @@ def send_email(subject, body, to, from_email=None, html_body=None, purpose='defa
 @app.task(queue='push', retry=procrastinate.RetryStrategy(max_attempts=5, exponential_wait=10, retry_exceptions=[PushError]))
 def send_push(item_id):
     delivery.send_item(item_id)
+
+
+# A silent push to the phones whose home-screen widgets show a business that changed
+@app.task(queue='push', retry=procrastinate.RetryStrategy(max_attempts=5, exponential_wait=10, retry_exceptions=[PushError]))
+def notify_widgets(workspace_id):
+    widgets.notify(workspace_id)

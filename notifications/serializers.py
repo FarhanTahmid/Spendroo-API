@@ -13,6 +13,9 @@ class DeviceSerializer(serializers.Serializer):
     timezone = serializers.CharField(max_length=64, required=False, allow_blank=True, default='',
                                      validators=[validate_timezone])
     app_version = serializers.CharField(max_length=40, required=False, allow_blank=True, default='')
+    # The businesses and cashbooks its home-screen widgets show; left out, they stay as they were
+    widget_workspaces = serializers.ListField(child=serializers.UUIDField(), max_length=50, required=False)
+    widget_books = serializers.ListField(child=serializers.UUIDField(), max_length=50, required=False)
 
 
 class ForgetDeviceSerializer(serializers.Serializer):

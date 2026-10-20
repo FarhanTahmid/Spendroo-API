@@ -14,6 +14,7 @@ from rest_framework.views import APIView
 from billing import gates
 from billing.entitlements import forget_counts
 from billing.models import Stamp
+from notifications import widgets
 from workspaces.models import Workspace
 from reminders.tasks import budgets_changed, goals_changed
 from workspaces.tenancy import TenantScopedMixin
@@ -234,7 +235,9 @@ class PushView(TenantScopedMixin, APIView):
                 {'detail': f'mutations must be a list of at most {MAX_PUSH_MUTATIONS}.'},
                 status=status.HTTP_400_BAD_REQUEST,
             )
-        results = [self.process(request.user, workspace, role, m) for m in mutations]
+        # Teammates' widgets hear of the whole batch once
+        with widgets.batch():
+            results = [self.process(request.user, workspace, role, m) for m in mutations]
         # What was spent or what may be spent changed: the budget alerts are looked at shortly
         if any(isinstance(m, dict) and m.get('table') in BUDGET_TABLES for m in mutations):
             budgets_changed(workspace.id)

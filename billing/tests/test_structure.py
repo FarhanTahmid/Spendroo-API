@@ -39,7 +39,7 @@ METERED_FOR_LATER = {F.AI_CREDITS, F.STATEMENT_PDF_PAGES}
 # Shown or hidden by the app from data it already holds; nothing reaches the server
 DECIDED_IN_THE_APP = {
     F.ADS, F.INSIGHTS_CUSTOM_RANGE, F.INSIGHTS_BUSINESS_ADVANCED,
-    F.HOME_WIDGET,
+    F.HOME_WIDGET, F.BUSINESS_WIDGET,
 }
 # Defined and shown, deliberately not enforced yet
 NOT_ENFORCED_YET = {F.DEVICES_MAX}
