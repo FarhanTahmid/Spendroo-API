@@ -29,7 +29,7 @@ PULL = '/api/v1/sync/pull/'
 
 # Apps whose models hold tenant data. Each model must carry the workspace key
 # and its table must have row-level security, unless listed as exempt.
-TENANT_APPS = ['cashbook', 'ledger_personal', 'reminders']
+TENANT_APPS = ['cashbook', 'ledger_personal', 'reminders', 'tags']
 EXEMPT_MODELS = set()
 
 

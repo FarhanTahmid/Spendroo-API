@@ -8,6 +8,7 @@ from rest_framework import serializers
 from workspaces.models import Membership, Workspace
 from workspaces.services import get_personal_workspace, workspaces_for
 from spendroo.money import validate_currency
+from tags.cleaning import clean_tag_ids
 from . import custom_fields
 from .models import (
     CashBook, CashBookAdditionalMember, EntryCategory,
@@ -105,7 +106,7 @@ class EntryListSerializer(serializers.ModelSerializer):
     class Meta:
         model = Entry
         fields = [
-            'id', 'entry_type', 'amount_minor', 'currency', 'source', 'title', 'entry_date',
+            'id', 'entry_type', 'amount_minor', 'currency', 'source', 'title', 'merchant', 'tag_ids', 'entry_date',
             'category', 'category_name', 'payment_method', 'payment_method_name',
             'created_by', 'created_by_email', 'bills_count', 'custom_values', 'version', 'created_at', 'updated_at'
         ]
@@ -126,7 +127,8 @@ class EntryDetailSerializer(serializers.ModelSerializer):
     class Meta:
         model = Entry
         fields = [
-            'id', 'entry_type', 'amount_minor', 'currency', 'source', 'title', 'remarks', 'entry_date',
+            'id', 'entry_type', 'amount_minor', 'currency', 'source', 'title', 'remarks', 'merchant', 'tag_ids',
+            'entry_date',
             'category', 'category_name', 'payment_method', 'payment_method_name',
             'created_by', 'created_by_email', 'bills', 'custom_values', 'fields_of_book',
             'version', 'created_at', 'updated_at'
@@ -144,7 +146,7 @@ class EntryCreateUpdateSerializer(serializers.ModelSerializer):
     class Meta:
         model = Entry
         fields = [
-            'id', 'entry_type', 'amount_minor', 'source', 'title', 'remarks', 'entry_date',
+            'id', 'entry_type', 'amount_minor', 'source', 'title', 'remarks', 'merchant', 'tag_ids', 'entry_date',
             'category', 'payment_method', 'custom_values'
         ]
         read_only_fields = ['id']
@@ -165,6 +167,11 @@ class EntryCreateUpdateSerializer(serializers.ModelSerializer):
             before = self.instance.custom_values if self.instance else {}
             try:
                 custom_fields.check_values(cashbook, attrs['custom_values'], before)
+            except DjangoValidationError as error:
+                raise serializers.ValidationError(error.message_dict)
+        if 'tag_ids' in attrs:
+            try:
+                attrs['tag_ids'] = clean_tag_ids(cashbook.workspace_id, attrs['tag_ids'])
             except DjangoValidationError as error:
                 raise serializers.ValidationError(error.message_dict)
         return attrs

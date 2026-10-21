@@ -17,6 +17,7 @@ from django.db.models.functions import Abs, Cast
 from rest_framework.exceptions import ParseError
 
 from spendroo.money import currency_exponent
+from tags.cleaning import tag_ids_matching
 from . import allocations, trends
 from .models import Transaction
 
@@ -124,8 +125,11 @@ def _narrow(account, filters):
     if filters.q:
         either = (
             Q(note__icontains=filters.q) | Q(category_name__icontains=filters.q)
-            | Q(other_account_name__icontains=filters.q)
+            | Q(other_account_name__icontains=filters.q) | Q(merchant__icontains=filters.q)
         )
+        # A tag's name: rows carrying any live tag of the workspace that matches
+        for tag_id in tag_ids_matching(account.workspace_id, filters.q):
+            either |= Q(tag_ids__contains=[tag_id])
         # "1,250" or "1250.50": also the amount, by its whole units
         number = filters.q.replace(',', '')
         whole, _, fraction = number.partition('.')

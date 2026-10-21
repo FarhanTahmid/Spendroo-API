@@ -24,6 +24,7 @@ from django.db.models import OuterRef, Subquery
 from rest_framework.exceptions import ParseError
 
 from cashbook.models import CashBook, CashBookAdditionalMember, Entry, EntryCategory, EntryField, PaymentMethod
+from tags.models import Tag
 from workspaces.models import Membership
 
 DEFAULT_LIMIT = 30
@@ -55,8 +56,8 @@ SOURCES = (
     Source(
         'entry', Entry,
         (
-            'entry_type', 'amount_minor', 'entry_date', 'title', 'remarks', 'category_id', 'payment_method_id',
-            'custom_values',
+            'entry_type', 'amount_minor', 'entry_date', 'title', 'remarks', 'merchant', 'tag_ids', 'category_id',
+            'payment_method_id', 'custom_values',
         ),
         names={'category_id': 'category', 'payment_method_id': 'payment_method'},
     ),
@@ -235,7 +236,7 @@ def _changed_values(old, new):
     return [key for key in {**old, **new} if old.get(key) != new.get(key)]
 
 
-def _field_ids(keys):
+def _uuids(keys):
     ids = []
     for key in keys:
         try:
@@ -257,7 +258,7 @@ class _Names:
     """Everything a page names, looked up at once, deleted rows and former members included."""
 
     def __init__(self, workspace, found):
-        books, categories, methods, people, fields = set(), set(), set(), set(), set()
+        books, categories, methods, people, fields, tags = set(), set(), set(), set(), set(), set()
         for source, event, _, changed, _ in found:
             if source.cashbook_column:
                 books.add(getattr(event, source.cashbook_column))
@@ -268,6 +269,9 @@ class _Names:
             for name, old, new in changed:
                 if name == 'custom_values':
                     fields.update(_changed_values(old, new))
+                    continue
+                if name == 'tag_ids':
+                    tags.update(*(value or [] for value in (old, new)))
                     continue
                 target = {'category_id': categories, 'payment_method_id': methods}.get(name)
                 if target is not None:
@@ -282,9 +286,13 @@ class _Names:
             PaymentMethod.all_objects.filter(workspace=workspace, id__in=methods)
             .values_list('id', 'payment_method_name'),
         )
+        self.tags = {
+            str(tag_id): name
+            for tag_id, name in Tag.all_objects.filter(workspace=workspace, id__in=_uuids(tags)).values_list('id', 'name')
+        }
         self.fields = {
             str(row.id): row
-            for row in EntryField.all_objects.filter(workspace=workspace, id__in=_field_ids(fields))
+            for row in EntryField.all_objects.filter(workspace=workspace, id__in=_uuids(fields))
         }
         self.people = {
             str(user.pk): user
@@ -323,7 +331,8 @@ class _Names:
         """
         if name != 'custom_values':
             return [{
-                'field': name.removesuffix('_id'),
+                # tag_ids reads as "tags": names, not ids
+                'field': 'tags' if name == 'tag_ids' else name.removesuffix('_id'),
                 'before': self.value(source, name, old), 'after': self.value(source, name, new),
             }]
         old, new = old or {}, new or {}
@@ -342,6 +351,9 @@ class _Names:
             return self.categories.get(value, '')
         if name == 'payment_method_id':
             return self.methods.get(value, '')
+        if name == 'tag_ids':
+            # A tag that never existed here is left out, as a field value is
+            return [self.tags[str(tag_id)] for tag_id in value if str(tag_id) in self.tags]
         if hasattr(value, 'isoformat'):
             return value.isoformat()
         return value

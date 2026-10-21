@@ -113,7 +113,7 @@ class EntryBillsInline(TabularInline):
 class EntryAdmin(TombstoneOnDeleteAdmin, ModelAdmin):
     list_display = ['title', 'cashbook', 'entry_type', 'amount_minor', 'currency', 'category', 'payment_method', 'entry_date', 'created_by']
     list_filter = ['entry_type', 'source', 'entry_date', 'created_at']
-    search_fields = ['title', 'remarks', 'cashbook__book_name', 'created_by__email']
+    search_fields = ['title', 'remarks', 'merchant', 'cashbook__book_name', 'created_by__email']
     readonly_fields = ['id', 'currency', 'created_at', 'updated_at']
     date_hierarchy = 'entry_date'
     inlines = [EntryBillsInline]

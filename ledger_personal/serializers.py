@@ -18,7 +18,7 @@ class AccountTransactionSerializer(serializers.ModelSerializer):
         model = Transaction
         fields = [
             'id', 'workspace_id', 'account_id', 'category_id', 'kind', 'amount_minor', 'currency',
-            'transfer_group_id', 'occurred_on', 'note', 'source', 'splits', 'version', 'created_at', 'updated_at',
+            'transfer_group_id', 'occurred_on', 'note', 'merchant', 'tag_ids', 'source', 'splits', 'version', 'created_at', 'updated_at',
             'category_name', 'category_color', 'other_account_id', 'other_account_name',
         ]
         read_only_fields = fields

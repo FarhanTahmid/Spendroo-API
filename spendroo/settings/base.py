@@ -89,6 +89,7 @@ LOCAL_APPS=[
     'cashbook',
     'ledger_personal',
     'reminders',
+    'tags',
     'sync',
     'billing',
     'reports',

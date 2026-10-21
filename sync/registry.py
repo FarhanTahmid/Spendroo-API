@@ -20,6 +20,8 @@ from ledger_personal.models import Account, Budget, Category, SavingsGoal, Trans
 from ledger_personal.queries import balance_of
 from reminders import engine
 from reminders.models import InboxItem, Occurrence, Rule
+from tags.cleaning import clean_tag_ids
+from tags.models import Tag
 from workspaces.models import Membership
 
 SYNC_COLUMNS = ['id', 'workspace_id', 'version', 'server_seq', 'created_at', 'updated_at', 'deleted_at']
@@ -137,6 +139,25 @@ def accessible_cashbook_ids(user, role):
     return CashBookAdditionalMember.objects.filter(member=user).values('cashbook_id')
 
 
+class TagTable(SyncTable):
+    """
+    The workspace's tags, on transactions and entries alike. Everyone in the
+    workspace sees them; whoever may add an entry to some book may make one
+    while adding it; only the people who run the workspace change or remove them.
+    """
+    writable = ['name', 'color']
+    # Free on every plan
+    plan_gates = NO_GATES
+
+    def can_write(self, user, role, obj, op):
+        if role in Membership.MANAGER_ROLES:
+            return True
+        if op != 'create':
+            return False
+        books = CashBook.objects.filter(workspace_id=obj.workspace_id, id__in=accessible_cashbook_ids(user, role))
+        return any(book.has_permission(user, 'add') for book in books)
+
+
 class EntryCategoryTable(CashBookChildTable):
     writable = ['cashbook_id', 'category_name', 'is_default', 'color']
     immutable = ['cashbook_id']
@@ -177,7 +198,7 @@ class EntryFieldTable(CashBookChildTable):
 class EntryTable(CashBookChildTable):
     writable = [
         'cashbook_id', 'category_id', 'payment_method_id', 'entry_type', 'amount_minor',
-        'title', 'remarks', 'entry_date', 'source', 'custom_values',
+        'title', 'remarks', 'merchant', 'tag_ids', 'entry_date', 'source', 'custom_values',
     ]
     immutable = ['cashbook_id']
     read_only = ['currency', 'created_by_id']
@@ -200,6 +221,8 @@ class EntryTable(CashBookChildTable):
             obj.custom_values = custom_fields.drop_invalid(obj.cashbook, obj.custom_values)
         elif 'custom_values' in before:
             custom_fields.check_values(obj.cashbook, obj.custom_values, before['custom_values'])
+        if creating or 'tag_ids' in before:
+            obj.tag_ids = clean_tag_ids(workspace, obj.tag_ids)
 
 
 class CashBookMemberTable(CashBookChildTable):
@@ -249,7 +272,7 @@ class CategoryTable(WorkspaceLevelTable):
 class TransactionTable(WorkspaceLevelTable):
     writable = [
         'account_id', 'category_id', 'kind', 'amount_minor', 'transfer_group_id',
-        'occurred_on', 'note', 'source', 'splits', 'occurrence_id',
+        'occurred_on', 'note', 'merchant', 'tag_ids', 'source', 'splits', 'occurrence_id',
     ]
     # Which date of a recurring rule it settles is said once, when it is recorded
     immutable = ['occurrence_id']
@@ -268,6 +291,8 @@ class TransactionTable(WorkspaceLevelTable):
         # Only when the split itself is sent: a category deleted since must not block other edits
         if obj.splits and (creating or 'splits' in before):
             allocations.check_categories(workspace, obj.splits)
+        if creating or 'tag_ids' in before:
+            obj.tag_ids = clean_tag_ids(workspace, obj.tag_ids)
         # Money is never spent straight from a goal: it goes back to an account first
         if obj.account.is_goal and obj.kind != 'transfer':
             raise ValidationError('Money goes into or out of a goal by a transfer only.')
@@ -390,6 +415,7 @@ class InboxTable(WorkspaceLevelTable):
 # pull is applied by the client in this order.
 TABLES = {
     table.name: table for table in [
+        TagTable('tags', Tag),
         CashBookTable('cashbooks', CashBook),
         EntryCategoryTable('entry_categories', EntryCategory),
         PaymentMethodTable('payment_methods', PaymentMethod),

@@ -27,7 +27,7 @@ class CategoryAdmin(TombstoneOnDeleteAdmin, ModelAdmin):
 class TransactionAdmin(TombstoneOnDeleteAdmin, ModelAdmin):
     list_display = ['occurred_on', 'kind', 'amount_minor', 'currency', 'account', 'category', 'source']
     list_filter = ['kind', 'source', 'occurred_on']
-    search_fields = ['note', 'workspace__owner__email']
+    search_fields = ['note', 'merchant', 'workspace__owner__email']
     readonly_fields = SYNC_READONLY + ['currency']
     date_hierarchy = 'occurred_on'
 

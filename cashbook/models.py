@@ -5,6 +5,7 @@ from django.db import models, transaction
 from django.db.models import F, Q, Sum
 from django.db.models.functions import Lower
 
+from spendroo.merchant import MAX_LENGTH as MERCHANT_LENGTH, set_merchant
 from workspaces.models import AliveManager, Membership, WorkspaceOwnedModel, hex_color
 
 from .bill_storage import get_bill_storage
@@ -328,6 +329,11 @@ class Entry(WorkspaceOwnedModel):
 
     title = models.CharField(max_length=200, null=True, blank=True)
     remarks = models.TextField(null=True, blank=True)
+    # The party paid or paid by (spendroo/merchant.py). The key is the copy matched on; never synced.
+    merchant = models.CharField(max_length=MERCHANT_LENGTH, blank=True, default='')
+    merchant_key = models.CharField(max_length=MERCHANT_LENGTH, blank=True, default='', editable=False)
+    # Ids of the workspace's tags (tags/cleaning.py)
+    tag_ids = models.JSONField(default=list, blank=True)
 
     entry_date = models.DateField(null=False, blank=False)
     # The book's own fields (EntryField): {field id: value as text}, checked by cashbook/custom_fields.py
@@ -339,6 +345,7 @@ class Entry(WorkspaceOwnedModel):
         ordering = ['-entry_date', '-created_at']
         indexes = [
             models.Index(fields=['workspace', 'cashbook', 'entry_date']),
+            models.Index(fields=['workspace', 'merchant_key'], name='cashbook_entry_merchant'),
             models.Index(fields=['entry_type']),
             models.Index(fields=['created_by']),
         ]
@@ -354,6 +361,7 @@ class Entry(WorkspaceOwnedModel):
 
     def save(self, *args, **kwargs):
         self.currency = self.cashbook.currency
+        set_merchant(self, kwargs)
         super().save(*args, **kwargs)
 
     def clean(self):

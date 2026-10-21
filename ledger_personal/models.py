@@ -3,6 +3,7 @@ from django.core.exceptions import ValidationError
 from django.db import models
 from django.db.models import Q
 
+from spendroo.merchant import MAX_LENGTH as MERCHANT_LENGTH, set_merchant
 from workspaces.models import WorkspaceOwnedModel, hex_color
 
 
@@ -100,6 +101,11 @@ class Transaction(WorkspaceOwnedModel):
     transfer_group_id = models.UUIDField(null=True, blank=True)
     occurred_on = models.DateField()
     note = models.CharField(max_length=200, blank=True, default='')
+    # Who was paid, or who paid (spendroo/merchant.py). The key is the copy matched on; never synced.
+    merchant = models.CharField(max_length=MERCHANT_LENGTH, blank=True, default='')
+    merchant_key = models.CharField(max_length=MERCHANT_LENGTH, blank=True, default='', editable=False)
+    # Ids of the workspace's tags (tags/cleaning.py)
+    tag_ids = models.JSONField(default=list, blank=True)
     source = models.CharField(max_length=10, choices=SOURCE_CHOICES, default='manual')
     # Filed under several categories at once: parts that add up to the amount
     # (allocations.py). While there are any, `category` is left empty.
@@ -117,6 +123,7 @@ class Transaction(WorkspaceOwnedModel):
                 fields=['workspace', 'account', 'occurred_on', 'created_at', 'id'], name='ledger_transaction_feed',
             ),
             models.Index(fields=['workspace', 'category', 'occurred_on']),
+            models.Index(fields=['workspace', 'merchant_key'], name='ledger_transaction_merchant'),
         ]
         constraints = [
             models.CheckConstraint(condition=~Q(amount_minor=0), name='transaction_amount_not_zero'),
@@ -170,6 +177,7 @@ class Transaction(WorkspaceOwnedModel):
         self.currency = self.account.currency
         if self.splits:
             self.category = None
+        set_merchant(self, kwargs)
         super().save(*args, **kwargs)
 
 
