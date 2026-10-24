@@ -1,8 +1,11 @@
 import pghistory
+from django.conf import settings
 from django.core.exceptions import ValidationError
-from django.db import models
+from django.db import models, transaction
 from django.db.models import Q
 
+from attachments.models import Attachment
+from attachments.storage import get_bill_storage
 from spendroo.merchant import MAX_LENGTH as MERCHANT_LENGTH, set_merchant
 from workspaces.models import WorkspaceOwnedModel, hex_color
 
@@ -179,6 +182,48 @@ class Transaction(WorkspaceOwnedModel):
             self.category = None
         set_merchant(self, kwargs)
         super().save(*args, **kwargs)
+
+    def soft_delete(self):
+        """Through the API or a phone's sync alike: the transaction's receipts go with it."""
+        from attachments.service import discard
+        from .receipts import RECEIPT
+        with transaction.atomic():
+            super().soft_delete()
+            discard(RECEIPT, TransactionReceipt.all_objects.filter(transaction=self))
+
+
+def receipt_path(instance, filename):
+    txn = instance.transaction
+    return f"workspaces/{txn.workspace_id}/transactions/{txn.id}/receipts/{filename}"
+
+
+class TransactionReceipt(Attachment):
+    """
+    A photo or PDF of the receipt of an expense or income. Added and removed
+    only through attachments/service.py (ledger_personal/receipts.py says
+    when), which checks the file and counts it against the owner's storage,
+    the same room business bills take. Phones get these rows by sync
+    (read-only) and each file through a signed link (attachments/storage.py).
+    """
+    transaction = models.ForeignKey(Transaction, on_delete=models.CASCADE, related_name='receipts')
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True, related_name='receipts_added',
+    )
+    receipt_file = models.FileField(
+        upload_to=receipt_path,
+        storage=get_bill_storage,
+        # The folder alone is about 120 characters (two ids); the default of 100 fits no file
+        max_length=300,
+    )
+
+    class Meta:
+        ordering = ['created_at']
+
+    def __str__(self):
+        return f"Receipt for {self.transaction}"
+
+    def get_parent_workspace_id(self):
+        return self.transaction.workspace_id
 
 
 class Budget(WorkspaceOwnedModel):

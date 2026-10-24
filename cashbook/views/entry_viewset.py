@@ -3,21 +3,18 @@ from rest_framework.decorators import action
 from rest_framework.response import Response
 from rest_framework.parsers import MultiPartParser, FormParser, JSONParser
 
-import uuid
-
 from django.db import transaction
-from django.http import Http404
 from django.shortcuts import get_object_or_404
-from rest_framework.exceptions import APIException
 
-from rest_framework.throttling import ScopedRateThrottle
-
+from attachments import service, storage
+from attachments.views import AttachmentUploads, uuid_or_404
 from billing import gates
 from billing.api.guards import CashbookPlanGuard
 from billing.catalog.keys import F
 from workspaces.tenancy import TenantScopedMixin
 
-from .. import bill_files, bill_storage, bills, custom_fields
+from .. import bills, custom_fields
+from ..bills import BILL
 from ..models import CashBook, Entry, EntryBills
 from ..permissions import *
 from ..serializers import (
@@ -25,69 +22,22 @@ from ..serializers import (
     EntryBillsSerializer,
 )
 
-# Room for the form fields around the largest file the server reads
-MULTIPART_SLACK = 1024 * 1024
 
-
-class BillRefused(APIException):
-    """A file that is not a whole, harmless photo or PDF. `code` says which way, for the app to word."""
-    status_code = 400
-
-    def __init__(self, code, message):
-        super().__init__({'code': code, 'detail': message})
-
-
-class BillIdTaken(APIException):
-    status_code = 409
-    default_detail = {'code': 'bill_id_taken', 'detail': 'That bill id belongs to another bill.'}
-
-
-def _uuid_or_404(value):
-    try:
-        return uuid.UUID(str(value))
-    except ValueError:
-        raise Http404
-
-
-class BillUploadThrottle(ScopedRateThrottle):
-    """Only requests that carry files: every photo is decoded and written out again."""
-    scope_attr = 'bill_throttle_scope'
-
-    def allow_request(self, request, view):
-        if 'multipart/form-data' not in (request.content_type or ''):
-            return True
-        return super().allow_request(request, view)
-
-
-class EntryViewSet(CashbookPlanGuard, TenantScopedMixin, viewsets.ModelViewSet):
+class EntryViewSet(AttachmentUploads, CashbookPlanGuard, TenantScopedMixin, viewsets.ModelViewSet):
     """
     ViewSet for managing cashbook entries.
     Supports CRUD operations with role-based access control.
     """
     permission_classes = [CashBookAccessPermission]
     parser_classes = [MultiPartParser, FormParser, JSONParser]
-    throttle_classes = [*viewsets.ModelViewSet.throttle_classes, BillUploadThrottle]
-    bill_throttle_scope = 'bill_upload'
-
-    def initial(self, request, *args, **kwargs):
-        # Before the body is read: a file bigger than any plan takes is refused unread
-        length = request.META.get('CONTENT_LENGTH') or '0'
-        if length.isdigit() and int(length) > bills.HARD_CAP_MB * bills.MB + MULTIPART_SLACK:
-            raise BillRefused(bill_files.TOO_LARGE, f'A bill can be up to {bills.HARD_CAP_MB} MB.')
-        super().initial(request, *args, **kwargs)
 
     def attach_bills(self, entry, uploads):
         """
-        Store files as bills of the entry (see cashbook/bills.py). Call inside
-        a transaction when the entry is saved in the same request: a refused
-        file must take the entry with it.
+        Store files as bills of the entry (see attachments/service.py). Call
+        inside a transaction when the entry is saved in the same request: a
+        refused file must take the entry with it.
         """
-        try:
-            return bills.attach(entry, uploads, actor=self.request.user)
-        except bill_files.BillRejected as error:
-            raise BillRefused(error.code, error.message)
-        except bills.BillConflict:
-            raise BillIdTaken()
+        return self.attach(BILL, entry, uploads)
 
     def require_custom_values(self, cashbook, serializer):
         """Filling in the book's own fields is the plan feature; the rest of an entry is not."""
@@ -284,22 +234,7 @@ class EntryViewSet(CashbookPlanGuard, TenantScopedMixin, viewsets.ModelViewSet):
                 status=status.HTTP_403_FORBIDDEN
             )
 
-        files = request.FILES.getlist('bill_file')
-        if not files:
-            return Response(
-                {'error': 'No files provided'},
-                status=status.HTTP_400_BAD_REQUEST
-            )
-        bill_id = request.data.get('bill_id') or None
-        if bill_id is not None:
-            if len(files) != 1:
-                return Response({'error': 'Send one file with a bill_id'}, status=status.HTTP_400_BAD_REQUEST)
-            try:
-                bill_id = uuid.UUID(str(bill_id))
-            except ValueError:
-                return Response({'error': 'bill_id is not an id'}, status=status.HTTP_400_BAD_REQUEST)
-
-        results = self.attach_bills(entry, [(file, bill_id) for file in files])
+        results = self.attach_bills(entry, self.read_uploads(request, 'bill_file', 'bill_id'))
         stored = [bill for bill, _ in results]
         created = any(fresh for _, fresh in results)
         return Response(
@@ -316,13 +251,13 @@ class EntryViewSet(CashbookPlanGuard, TenantScopedMixin, viewsets.ModelViewSet):
         Remove a bill from an entry. The owner gets the storage back at once.
         """
         entry = self.entry_for_bills(pk)
-        bill = get_object_or_404(EntryBills, id=_uuid_or_404(bill_id), entry=entry)
+        bill = get_object_or_404(EntryBills, id=uuid_or_404(bill_id), entry=entry)
         if not bills.can_remove(bill, request.user):
             return Response(
                 {'error': 'You do not have permission to remove bills from this entry'},
                 status=status.HTTP_403_FORBIDDEN
             )
-        bills.remove(bill)
+        service.remove(BILL, bill)
         return Response(
             {'message': 'Bill removed successfully'},
             status=status.HTTP_200_OK
@@ -332,6 +267,6 @@ class EntryViewSet(CashbookPlanGuard, TenantScopedMixin, viewsets.ModelViewSet):
     def bill_link(self, request, cashbook_pk=None, pk=None, bill_id=None):
         """A link to the bill's file, good for a few minutes and only for the one who asked."""
         entry = self.entry_for_bills(pk)
-        bill = get_object_or_404(EntryBills, id=_uuid_or_404(bill_id), entry=entry)
-        url, expires_at = bill_storage.link_for(bill, request.user)
+        bill = get_object_or_404(EntryBills, id=uuid_or_404(bill_id), entry=entry)
+        url, expires_at = storage.link_for(BILL, bill, request.user)
         return Response({'url': url, 'expires_at': expires_at})

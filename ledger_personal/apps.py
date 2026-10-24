@@ -6,4 +6,4 @@ class LedgerPersonalConfig(AppConfig):
     name = 'ledger_personal'
 
     def ready(self):
-        from . import signals  # noqa: F401
+        from . import receipts, signals  # noqa: F401  (receipts registers itself as a kind of attachment)

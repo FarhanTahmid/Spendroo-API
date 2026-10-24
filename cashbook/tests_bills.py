@@ -1,27 +1,25 @@
 """Bills attached to entries: what each plan takes, what is refused, who may do what, and where files go."""
 import os
-import shutil
-import tempfile
 import time
 import uuid
-from datetime import timedelta
 from unittest import mock
 
 from django.conf import settings
 from django.core.management import call_command
-from django.test import SimpleTestCase, override_settings
 
+from attachments import files as attachment_files, samples, service
+from attachments.storage import LINK_SECONDS, bill_storage
+from attachments.testing import AttachmentStorageMixin
 from billing import usage
 from billing.catalog.keys import F
 from billing.models import UsageCounter
 from billing.testing import grant_plan
 from billing.tests.base import BillingTestCase, client_for
 from sync.guard import allow_hard_delete
-from workspaces.models import Membership, Workspace
+from workspaces.models import Workspace
 from workspaces.tests import TeamTestCase
 
-from . import bill_files, bill_samples as samples, bills
-from .bill_storage import LINK_SECONDS, bill_storage
+from .bills import BILL
 from .models import CashBook, Entry, EntryBills
 
 BOOKS = '/api/v1/cashbooks/'
@@ -30,90 +28,7 @@ PUSH = '/api/v1/sync/push/'
 MB = samples.MB
 
 
-class InspectionTests(SimpleTestCase):
-    """Files are judged by their bytes; photos come out rewritten, PDFs with anything active are refused."""
-
-    def refused(self, data):
-        with self.assertRaises(bill_files.BillRejected) as caught:
-            bill_files.inspect(data)
-        return caught.exception.code
-
-    def test_only_real_photos_and_pdfs_get_through(self):
-        for data in (samples.HTML, samples.EXE, samples.SVG, b'', b'GIF89a' + b'\x00' * 40, samples.ZIP):
-            self.assertEqual(self.refused(data), bill_files.TYPE, data[:10])
-
-    def test_a_name_or_claimed_type_proves_nothing(self):
-        # An executable called bill.jpg, sent as image/jpeg, is still an executable
-        self.assertEqual(self.refused(samples.EXE), bill_files.TYPE)
-        # A JPEG head on a file that is not one
-        self.assertEqual(self.refused(b'\xff\xd8\xff' + samples.HTML), bill_files.CORRUPT)
-
-    def test_photos_are_rewritten_with_nothing_but_their_pixels(self):
-        gps = samples.jpeg(gps=True)
-        self.assertIn(b'PhoneMaker', gps)
-        self.assertNotIn(b'PhoneMaker', bill_files.inspect(gps).content)
-        glued = bill_files.inspect(samples.jpeg() + samples.ZIP).content
-        self.assertNotIn(b'PK\x03\x04', glued)
-        padded = bill_files.inspect(samples.jpeg(size=MB)).content
-        self.assertNotIn(b'CCCC', padded)
-        self.assertNotIn(b'<?php', bill_files.inspect(samples.png(text='<?php system($_GET[1]); ?>')).content)
-
-    def test_a_photo_without_see_through_parts_is_stored_as_jpeg(self):
-        self.assertEqual(bill_files.inspect(samples.png()).content_type, bill_files.JPEG)
-        self.assertEqual(bill_files.inspect(samples.png(alpha=True)).content_type, bill_files.PNG)
-
-    def test_a_decompression_bomb_is_refused_before_it_is_decoded(self):
-        self.assertEqual(self.refused(samples.png_bomb()), bill_files.UNSAFE)
-
-    def test_pdfs_that_act_on_their_own_are_refused(self):
-        for make in (
-            samples.pdf_with_script, samples.pdf_with_open_action, samples.pdf_with_launch,
-            samples.pdf_with_attachment, samples.pdf_encrypted, samples.pdf_hidden_script,
-        ):
-            self.assertEqual(self.refused(make()), bill_files.UNSAFE, make.__name__)
-
-    def test_a_pdf_with_another_file_after_its_end_is_refused(self):
-        self.assertEqual(self.refused(samples.pdf() + samples.ZIP), bill_files.UNSAFE)
-
-    def test_broken_and_oversized_pdfs_are_refused(self):
-        self.assertEqual(self.refused(samples.pdf()[:-200]), bill_files.CORRUPT)
-        self.assertEqual(self.refused(b'%PDF-1.7\n%%EOF'), bill_files.CORRUPT)
-        self.assertEqual(self.refused(samples.pdf(bill_files.MAX_PAGES + 1)), bill_files.TOO_LARGE)
-
-    def test_a_clean_pdf_is_kept_as_it_came(self):
-        data = samples.pdf(3)
-        kept = bill_files.inspect(data)
-        self.assertEqual((kept.content, kept.content_type, kept.page_count), (data, bill_files.PDF, 3))
-
-    def test_names_are_for_showing_only(self):
-        self.assertEqual(bills.clean_name('../../etc/passwd.jpg'), 'passwd.jpg')
-        self.assertEqual(bills.clean_name('C:\\Users\\me\\bill\x00\n.pdf'), 'bill.pdf')
-        self.assertEqual(len(bills.clean_name('a' * 500 + '.jpg')), bills.NAME_LENGTH)
-
-
-class BillStorageMixin:
-    def setUp(self):
-        super().setUp()
-        self.folder = tempfile.mkdtemp()
-        self.addCleanup(shutil.rmtree, self.folder, ignore_errors=True)
-        storages = {
-            **settings.STORAGES,
-            'bills': {'BACKEND': 'django.core.files.storage.FileSystemStorage', 'OPTIONS': {'location': self.folder}},
-        }
-        override = override_settings(STORAGES=storages)
-        override.enable()
-        self.addCleanup(override.disable)
-
-    def files(self):
-        return sorted(
-            os.path.relpath(os.path.join(root, name), self.folder)
-            for root, _, names in os.walk(self.folder) for name in names
-        )
-
-    def used(self, user):
-        counter = UsageCounter.objects.filter(user=user, feature_key=str(F.STORAGE_ATTACHMENTS_MB)).first()
-        return counter.used if counter else 0
-
+class BillStorageMixin(AttachmentStorageMixin):
     def new_entry(self, client, book, expected=201):
         response = client.post(
             f'{BOOKS}{book.id}/entries/',
@@ -197,18 +112,18 @@ class PlanTierTests(BillStorageMixin, BillingTestCase):
         self.attached(self.alice_client, self.book, self.entry, samples.jpeg(size=21 * MB))
         response = self.attach(self.alice_client, self.book, self.entry, samples.jpeg(size=51 * MB))
         self.assertEqual(response.status_code, 400, response.data)
-        self.assertEqual(response.data['code'], bill_files.TOO_LARGE)
+        self.assertEqual(response.data['code'], attachment_files.TOO_LARGE)
 
     def test_a_body_larger_than_any_bill_is_refused_unread(self):
         response = self.attach(self.alice_client, self.book, self.entry, CONTENT_LENGTH=str(60 * MB))
         self.assertEqual(response.status_code, 400)
-        self.assertEqual(response.data['code'], bill_files.TOO_LARGE)
+        self.assertEqual(response.data['code'], attachment_files.TOO_LARGE)
 
     def test_bills_sent_with_a_new_entry_are_checked_too(self):
         url = f'{BOOKS}{self.book.id}/entries/'
         entry = {'entry_type': 'cash_in', 'amount_minor': 5000, 'entry_date': '2026-10-01'}
         refused = self.alice_client.post(url, {**entry, 'bills': samples.upload(samples.HTML)}, format='multipart')
-        self.assertEqual((refused.status_code, refused.data['code']), (400, bill_files.TYPE))
+        self.assertEqual((refused.status_code, refused.data['code']), (400, attachment_files.TYPE))
         self.assertEqual(Entry.objects.filter(cashbook=self.book).count(), 1)  # only setUp's
 
         made = self.alice_client.post(url, {**entry, 'bills': samples.upload(samples.jpeg())}, format='multipart')
@@ -227,17 +142,17 @@ class SecurityTests(BillStorageMixin, BillingTestCase):
 
     def test_hostile_files_are_refused_and_leave_nothing_behind(self):
         cases = [
-            (samples.EXE, 'invoice.jpg', bill_files.TYPE),
-            (samples.HTML, 'bill.png', bill_files.TYPE),
-            (samples.SVG, 'bill.svg', bill_files.TYPE),
-            (samples.png_bomb(), 'bill.png', bill_files.UNSAFE),
-            (samples.pdf_with_script(), 'bill.pdf', bill_files.UNSAFE),
-            (samples.pdf_with_open_action(), 'bill.pdf', bill_files.UNSAFE),
-            (samples.pdf_with_launch(), 'bill.pdf', bill_files.UNSAFE),
-            (samples.pdf_with_attachment(), 'bill.pdf', bill_files.UNSAFE),
-            (samples.pdf_encrypted(), 'bill.pdf', bill_files.UNSAFE),
-            (samples.pdf() + samples.ZIP, 'bill.pdf', bill_files.UNSAFE),
-            (samples.pdf()[:-200], 'bill.pdf', bill_files.CORRUPT),
+            (samples.EXE, 'invoice.jpg', attachment_files.TYPE),
+            (samples.HTML, 'bill.png', attachment_files.TYPE),
+            (samples.SVG, 'bill.svg', attachment_files.TYPE),
+            (samples.png_bomb(), 'bill.png', attachment_files.UNSAFE),
+            (samples.pdf_with_script(), 'bill.pdf', attachment_files.UNSAFE),
+            (samples.pdf_with_open_action(), 'bill.pdf', attachment_files.UNSAFE),
+            (samples.pdf_with_launch(), 'bill.pdf', attachment_files.UNSAFE),
+            (samples.pdf_with_attachment(), 'bill.pdf', attachment_files.UNSAFE),
+            (samples.pdf_encrypted(), 'bill.pdf', attachment_files.UNSAFE),
+            (samples.pdf() + samples.ZIP, 'bill.pdf', attachment_files.UNSAFE),
+            (samples.pdf()[:-200], 'bill.pdf', attachment_files.CORRUPT),
         ]
         for data, name, code in cases:
             response = self.attach(self.alice_client, self.book, self.entry, data, name=name)
@@ -414,14 +329,14 @@ class RemovalTests(BillStorageMixin, BillingTestCase):
     def test_a_removed_bill_gives_back_its_storage_once(self):
         bill = EntryBills.objects.get(id=self.bill['id'])
         with self.captureOnCommitCallbacks(execute=True):
-            bills.remove(bill)
-            bills.discard(EntryBills.all_objects.filter(id=bill.id))
+            service.remove(BILL, bill)
+            service.discard(BILL, EntryBills.all_objects.filter(id=bill.id))
             Entry.objects.get(id=self.entry).soft_delete()
         self.assertGone()
 
     def test_files_left_behind_are_swept_up(self):
         bill_storage.save('stray/left-behind.jpg', samples.upload(samples.jpeg()))
-        self.assertEqual(bills.purge_files(), [])  # too new: maybe an upload still under way
+        self.assertEqual(service.purge_files(), [])  # too new: maybe an upload still under way
         stray = os.path.join(self.folder, 'stray/left-behind.jpg')
         old = time.time() - 2 * 3600
         os.utime(stray, (old, old))

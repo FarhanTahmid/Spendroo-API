@@ -5,10 +5,10 @@ from django.db import models, transaction
 from django.db.models import F, Q, Sum
 from django.db.models.functions import Lower
 
+from attachments.models import Attachment
+from attachments.storage import get_bill_storage
 from spendroo.merchant import MAX_LENGTH as MERCHANT_LENGTH, set_merchant
 from workspaces.models import AliveManager, Membership, WorkspaceOwnedModel, hex_color
-
-from .bill_storage import get_bill_storage
 
 
 class CashBookQuerySet(models.QuerySet):
@@ -83,8 +83,9 @@ class CashBook(WorkspaceOwnedModel):
             for model in (Entry, EntryCategory, PaymentMethod, EntryField, CashBookAdditionalMember):
                 model.all_objects.filter(cashbook=self, deleted_at__isnull=True).update(**stamp)
             # Bills also give the owner's storage back and leave the disk
-            from .bills import discard
-            discard(EntryBills.all_objects.filter(cashbook=self))
+            from attachments.service import discard
+            from .bills import BILL
+            discard(BILL, EntryBills.all_objects.filter(cashbook=self))
 
     def get_balance(self):
         """Calculate current balance in minor units"""
@@ -370,10 +371,11 @@ class Entry(WorkspaceOwnedModel):
 
     def soft_delete(self):
         """Through the API or a phone's sync alike: the entry's bills go with it."""
-        from .bills import discard
+        from attachments.service import discard
+        from .bills import BILL
         with transaction.atomic():
             super().soft_delete()
-            discard(EntryBills.all_objects.filter(entry=self))
+            discard(BILL, EntryBills.all_objects.filter(entry=self))
 
 
 def get_user_bill_filepath(instance, filename):
@@ -381,12 +383,12 @@ def get_user_bill_filepath(instance, filename):
     return f"workspaces/{entry.workspace_id}/cashbooks/{entry.cashbook_id}/entries/{entry.id}/bills/{filename}"
 
 
-class EntryBills(WorkspaceOwnedModel):
+class EntryBills(Attachment):
     """
     A photo or PDF kept with an entry as proof. Added and removed only through
-    cashbook/bills.py, which checks the file and counts it against the owner's
-    storage. Phones get these rows by sync (read-only) and each file through a
-    signed link (cashbook/bill_storage.py).
+    attachments/service.py (cashbook/bills.py says who may), which checks the
+    file and counts it against the owner's storage. Phones get these rows by
+    sync (read-only) and each file through a signed link (attachments/storage.py).
     """
     entry = models.ForeignKey(Entry, on_delete=models.CASCADE, related_name='bills')
     # The entry's book, kept here so sync can narrow bills to the books a member sees
@@ -403,16 +405,6 @@ class EntryBills(WorkspaceOwnedModel):
         # The folder alone is about 150 characters (three ids); the default of 100 fits no file
         max_length=300,
     )
-    # What the bytes proved the file to be (cashbook/bill_files.py), never what the phone said
-    content_type = models.CharField(max_length=40, default='', editable=False)
-    # Shown to people only; the stored file is named after the bill's id
-    original_name = models.CharField(max_length=120, blank=True, default='', editable=False)
-    # Counted against the owner's attachment storage, and given back on removal
-    size_bytes = models.PositiveBigIntegerField(default=0, editable=False)
-    # Pages of a PDF; width and height of a photo, or of a PDF's first page in points
-    page_count = models.PositiveIntegerField(null=True, blank=True, editable=False)
-    width = models.PositiveIntegerField(null=True, blank=True, editable=False)
-    height = models.PositiveIntegerField(null=True, blank=True, editable=False)
 
     class Meta:
         verbose_name = "Bill of Entry"

@@ -33,6 +33,10 @@ FILTER_PARAMETERS = [
         description="Category ids; 'none' for income and expenses with no category.",
     ),
     OpenApiParameter(
+        'receipt', OpenApiTypes.STR, enum=list(queries.RECEIPT_CHOICES),
+        description='1: only transactions with a receipt; 0: only those without.',
+    ),
+    OpenApiParameter(
         'q', OpenApiTypes.STR,
         description="Matches the note, the category, the other account of a transfer, or the amount's whole units.",
     ),

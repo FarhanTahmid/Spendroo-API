@@ -6,8 +6,10 @@ from django.core.management.base import BaseCommand, CommandError
 from django.db import transaction
 from django.utils import timezone
 
+from attachments.service import discard
 from identity.models import AppUser
-from ledger_personal.models import Account, Budget, Category, Transaction
+from ledger_personal.models import Account, Budget, Category, Transaction, TransactionReceipt
+from ledger_personal.receipts import RECEIPT
 from sync.guard import tombstone
 from workspaces.services import get_personal_workspace
 
@@ -71,6 +73,7 @@ class Command(BaseCommand):
                 raise CommandError('This workspace already has transactions. Use --reset to replace them.')
             if reset:
                 # Never a hard delete: a phone learns a row is gone only from its tombstone
+                discard(RECEIPT, TransactionReceipt.objects.filter(workspace=workspace))
                 tombstone(Transaction.objects.filter(workspace=workspace))
                 tombstone(Budget.objects.filter(workspace=workspace))
                 tombstone(Account.objects.filter(workspace=workspace).exclude(name='Cash'))

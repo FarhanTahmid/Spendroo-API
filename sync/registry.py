@@ -16,7 +16,7 @@ from cashbook.models import (
 )
 from ledger_personal import allocations
 from ledger_personal import goals as goal_math
-from ledger_personal.models import Account, Budget, Category, SavingsGoal, Transaction
+from ledger_personal.models import Account, Budget, Category, SavingsGoal, Transaction, TransactionReceipt
 from ledger_personal.queries import balance_of
 from reminders import engine
 from reminders.models import InboxItem, Occurrence, Rule
@@ -298,6 +298,25 @@ class TransactionTable(WorkspaceLevelTable):
             raise ValidationError('Money goes into or out of a goal by a transfer only.')
 
 
+class TransactionReceiptTable(WorkspaceLevelTable):
+    """
+    Receipts of transactions, so every phone knows which have one even
+    offline. Added and removed only through the REST API
+    (ledger_personal/receipt_views.py), which checks the file and counts
+    storage; clients only read them.
+    """
+    read_only = [
+        'transaction_id', 'created_by_id', 'content_type', 'original_name', 'size_bytes',
+        'page_count', 'width', 'height',
+    ]
+    plan_gates = NO_GATES
+    client_creates = False
+    client_deletes = False
+
+    def can_write(self, user, role, obj, op):
+        return False
+
+
 class BudgetTable(WorkspaceLevelTable):
     writable = ['category_id', 'amount_minor', 'currency', 'month']
     references = {'category_id': (Category, None)}
@@ -429,6 +448,7 @@ TABLES = {
         RuleTable('recurring_rules', Rule),
         OccurrenceTable('recurring_occurrences', Occurrence),
         TransactionTable('transactions', Transaction),
+        TransactionReceiptTable('transaction_receipts', TransactionReceipt),
         BudgetTable('budgets', Budget),
         InboxTable('inbox_items', InboxItem),
     ]

@@ -84,13 +84,13 @@ class F:
     AUDIT_TRAIL = FeatureKey('history.audit_trail', FLAG, 'Owner-visible edit history')
     ENTRY_CUSTOM_FIELDS = FeatureKey('entries.custom_fields', FLAG, 'Custom fields on entries')
     STORAGE_ATTACHMENTS_MB = FeatureKey(
-        'storage.attachments_mb', LIMIT, 'Bill attachments', 'Total size of attached files.', unit='MB',
+        'storage.attachments_mb', LIMIT, 'Attachments', 'Total size of attached bills and receipts.', unit='MB',
     )
     STORAGE_ATTACHMENT_FILE_MB = FeatureKey(
-        'storage.attachment_file_mb', LIMIT, 'Largest bill', 'Size of one attached file.', unit='MB',
+        'storage.attachment_file_mb', LIMIT, 'Largest attachment', 'Size of one attached file.', unit='MB',
     )
     STORAGE_ATTACHMENT_PDF = FeatureKey(
-        'storage.attachment_pdf', FLAG, 'PDF bills', 'Attach PDFs as well as photos.',
+        'storage.attachment_pdf', FLAG, 'PDF attachments', 'Attach PDFs as well as photos.',
     )
 
     # Reports to download (reports/). A PDF of a preset period is for every plan.

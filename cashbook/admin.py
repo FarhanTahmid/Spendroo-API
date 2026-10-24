@@ -1,10 +1,12 @@
 from django.contrib import admin
-from unfold.admin import ModelAdmin, TabularInline
+from unfold.admin import ModelAdmin
+
+from attachments.admin import FILE_COLUMNS, AttachmentAdmin, AttachmentInline
 
 from sync.admin import TombstoneOnDeleteAdmin
 from django.utils.html import format_html
 from spendroo.money import format_money
-from . import bills
+from .bills import BILL
 from .models import (
     CashBook, CashBookAdditionalMember, EntryCategory, 
     PaymentMethod, Entry, EntryBills, EntryField
@@ -97,16 +99,8 @@ class PaymentMethodAdmin(TombstoneOnDeleteAdmin, ModelAdmin):
     )
 
 
-class EntryBillsInline(TabularInline):
-    """Shown, never added here: a bill comes in through the app, where its file is checked and counted."""
+class EntryBillsInline(AttachmentInline):
     model = EntryBills
-    extra = 0
-    can_delete = False
-    fields = ['original_name', 'content_type', 'size_bytes', 'created_by', 'created_at']
-    readonly_fields = fields
-
-    def has_add_permission(self, request, obj=None):
-        return False
 
 
 @admin.register(Entry)
@@ -140,28 +134,13 @@ class EntryAdmin(TombstoneOnDeleteAdmin, ModelAdmin):
 
 
 @admin.register(EntryBills)
-class EntryBillsAdmin(TombstoneOnDeleteAdmin, ModelAdmin):
-    """Read-only. Deleting gives the owner's storage back and removes the file, as the app does."""
+class EntryBillsAdmin(AttachmentAdmin):
+    kind = BILL
     list_display = ['id', 'entry', 'original_name', 'content_type', 'size_bytes', 'created_by', 'created_at', 'deleted_at']
     list_filter = ['content_type', 'created_at']
     search_fields = ['original_name', 'entry__title', 'entry__cashbook__book_name']
-    readonly_fields = [
-        'id', 'entry', 'cashbook', 'created_by', 'bill_file', 'content_type', 'original_name', 'size_bytes',
-        'page_count', 'width', 'height', 'created_at', 'deleted_at',
-    ]
+    readonly_fields = ['id', 'entry', 'cashbook', 'created_by', 'bill_file', *FILE_COLUMNS, 'created_at', 'deleted_at']
     fields = readonly_fields
-
-    def has_add_permission(self, request):
-        return False
-
-    def has_change_permission(self, request, obj=None):
-        return False
-
-    def delete_model(self, request, obj):
-        bills.remove(obj)
-
-    def delete_queryset(self, request, queryset):
-        bills.discard(queryset)
 
     def get_queryset(self, request):
         qs = super().get_queryset(request)

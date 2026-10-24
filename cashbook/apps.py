@@ -6,4 +6,4 @@ class CashbookConfig(AppConfig):
     name = 'cashbook'
 
     def ready(self):
-        from . import bills  # noqa: F401  (gives storage back when a bill is hard-deleted)
+        from . import bills  # noqa: F401  (registers bills as a kind of attachment)

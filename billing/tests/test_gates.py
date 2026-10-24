@@ -7,7 +7,7 @@ from django.test import override_settings
 from billing.catalog.keys import F
 from billing.models import BillingSettings, FunnelEvent, UsageCounter
 from billing.testing import grant_plan, set_flag, set_limit, set_mode, set_plan_value
-from cashbook import bill_samples
+from attachments import samples as bill_samples
 from cashbook.models import CashBook, CashBookAdditionalMember, EntryBills, EntryField
 from ledger_personal.models import Account, Budget, Category
 from sync.models import SyncMutation

@@ -1,5 +1,5 @@
 """
-Real and hostile files for the bill tests: photos and PDFs made on the spot,
+Real and hostile files for the attachment tests: photos and PDFs made on the spot,
 so no binary fixtures live in the repository.
 """
 import io

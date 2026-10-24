@@ -1,6 +1,6 @@
 """
-What a bill really is, read from its bytes: never from its name or the type
-the phone claims.
+What an attachment (a bill, a receipt) really is, read from its bytes: never
+from its name or the type the phone claims.
 
 Photos are decoded and written out again, so whatever rode along in the file
 (EXIF and GPS, a script glued to the end, a second file hidden inside) is left
@@ -19,7 +19,7 @@ from pypdf.generic import ArrayObject, DictionaryObject, IndirectObject, NameObj
 JPEG, PNG, PDF = 'image/jpeg', 'image/png', 'application/pdf'
 EXTENSIONS = {JPEG: 'jpg', PNG: 'png', PDF: 'pdf'}
 
-# Refusal codes the app turns into words
+# Refusal codes the app turns into words. Named for bills, the first kind; receipts share them
 TYPE = 'bill_type'
 TOO_LARGE = 'bill_too_large'
 UNSAFE = 'bill_unsafe'
@@ -47,7 +47,7 @@ ACTIVE_ACTIONS = {
 }
 
 
-class BillRejected(Exception):
+class FileRejected(Exception):
     def __init__(self, code, message):
         super().__init__(message)
         self.code = code
@@ -55,7 +55,7 @@ class BillRejected(Exception):
 
 
 @dataclass(frozen=True)
-class InspectedBill:
+class InspectedFile:
     content: bytes
     content_type: str
     page_count: int | None = None
@@ -74,13 +74,13 @@ class InspectedBill:
 def read_upload(upload, max_bytes):
     """The whole file, refusing one larger than `max_bytes` before reading more than that."""
     if upload.size is not None and upload.size > max_bytes:
-        raise BillRejected(TOO_LARGE, 'This file is larger than your plan allows for one bill.')
+        raise FileRejected(TOO_LARGE, 'This file is larger than your plan allows for one file.')
     upload.seek(0)
     data = upload.read(max_bytes + 1)
     if len(data) > max_bytes:
-        raise BillRejected(TOO_LARGE, 'This file is larger than your plan allows for one bill.')
+        raise FileRejected(TOO_LARGE, 'This file is larger than your plan allows for one file.')
     if not data:
-        raise BillRejected(CORRUPT, 'This file is empty.')
+        raise FileRejected(CORRUPT, 'This file is empty.')
     return data
 
 
@@ -97,12 +97,12 @@ def sniff(data):
 
 def inspect(data):
     """
-    The bill as it will be stored. Raises BillRejected for anything that is
+    The file as it will be stored. Raises FileRejected for anything that is
     not a whole, harmless JPEG, PNG or PDF.
     """
     kind = sniff(data)
     if kind is None:
-        raise BillRejected(TYPE, 'Only photos (JPEG or PNG) and PDFs can be attached.')
+        raise FileRejected(TYPE, 'Only photos (JPEG or PNG) and PDFs can be attached.')
     if kind == PDF:
         return _pdf(data)
     return _photo(data, kind)
@@ -115,23 +115,23 @@ def _photo(data, kind):
         try:
             with Image.open(io.BytesIO(data)) as probe:
                 if probe.format not in expected:
-                    raise BillRejected(TYPE, 'This file is not the photo it says it is.')
+                    raise FileRejected(TYPE, 'This file is not the photo it says it is.')
                 # Read from the header, before a single pixel is decoded
                 width, height = probe.size
                 if width * height > MAX_PIXELS:
-                    raise BillRejected(UNSAFE, 'This photo is too large to open safely.')
+                    raise FileRejected(UNSAFE, 'This photo is too large to open safely.')
                 probe.verify()
             with Image.open(io.BytesIO(data)) as image:
                 image.load()
                 photo = ImageOps.exif_transpose(image)
                 photo.thumbnail((LONG_EDGE, LONG_EDGE))
                 return _encode(photo)
-        except BillRejected:
+        except FileRejected:
             raise
         except (Image.DecompressionBombError, Image.DecompressionBombWarning):
-            raise BillRejected(UNSAFE, 'This photo is too large to open safely.')
+            raise FileRejected(UNSAFE, 'This photo is too large to open safely.')
         except Exception:
-            raise BillRejected(CORRUPT, 'This photo is damaged and cannot be opened.')
+            raise FileRejected(CORRUPT, 'This photo is damaged and cannot be opened.')
 
 
 def _encode(photo):
@@ -149,32 +149,32 @@ def _encode(photo):
             photo = photo.convert('RGB')
         photo.save(out, 'JPEG', quality=JPEG_QUALITY, optimize=True, progressive=True)
         content_type = JPEG
-    return InspectedBill(out.getvalue(), content_type, width=photo.width, height=photo.height)
+    return InspectedFile(out.getvalue(), content_type, width=photo.width, height=photo.height)
 
 
 def _pdf(data):
     end = data.rfind(b'%%EOF')
     if end < 0:
-        raise BillRejected(CORRUPT, 'This PDF is cut short and cannot be opened.')
+        raise FileRejected(CORRUPT, 'This PDF is cut short and cannot be opened.')
     if len(data[end + 5:].strip()) > TRAILING_SLACK:
-        raise BillRejected(UNSAFE, 'This PDF has another file hidden in it.')
+        raise FileRejected(UNSAFE, 'This PDF has another file hidden in it.')
     try:
         reader = PdfReader(io.BytesIO(data), strict=True)
         if reader.is_encrypted:
-            raise BillRejected(UNSAFE, 'This PDF is locked with a password. Attach one without it.')
+            raise FileRejected(UNSAFE, 'This PDF is locked with a password. Attach one without it.')
         pages = len(reader.pages)
         if not pages:
-            raise BillRejected(CORRUPT, 'This PDF has no pages.')
+            raise FileRejected(CORRUPT, 'This PDF has no pages.')
         if pages > MAX_PAGES:
-            raise BillRejected(TOO_LARGE, f'A PDF bill may have up to {MAX_PAGES} pages.')
+            raise FileRejected(TOO_LARGE, f'A PDF may have up to {MAX_PAGES} pages.')
         _refuse_active_content(reader)
         first = reader.pages[0].mediabox
         width, height = round(float(first.width)), round(float(first.height))
-    except BillRejected:
+    except FileRejected:
         raise
     except Exception:
-        raise BillRejected(CORRUPT, 'This PDF is damaged and cannot be opened.')
-    return InspectedBill(data, PDF, page_count=pages, width=width, height=height)
+        raise FileRejected(CORRUPT, 'This PDF is damaged and cannot be opened.')
+    return InspectedFile(data, PDF, page_count=pages, width=width, height=height)
 
 
 def _refuse_active_content(reader):
@@ -200,13 +200,13 @@ def _refuse_active_content(reader):
             value = value.get_object()
         read += 1
         if read > MAX_PDF_OBJECTS:
-            raise BillRejected(UNSAFE, 'This PDF is too complex to check.')
+            raise FileRejected(UNSAFE, 'This PDF is too complex to check.')
         if isinstance(value, DictionaryObject):
             for name, item in value.items():
                 if name in ACTIVE_KEYS:
-                    raise BillRejected(UNSAFE, 'This PDF contains scripts or attachments, so it cannot be kept.')
+                    raise FileRejected(UNSAFE, 'This PDF contains scripts or attachments, so it cannot be kept.')
                 if name == '/S' and isinstance(item, NameObject) and item in ACTIVE_ACTIONS:
-                    raise BillRejected(UNSAFE, 'This PDF contains scripts or attachments, so it cannot be kept.')
+                    raise FileRejected(UNSAFE, 'This PDF contains scripts or attachments, so it cannot be kept.')
                 pending.append(item)
         elif isinstance(value, ArrayObject):
             pending.extend(value)

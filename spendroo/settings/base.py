@@ -86,6 +86,7 @@ LOCAL_APPS=[
     'workspaces',
     'audit',
     'notifications',
+    'attachments',
     'cashbook',
     'ledger_personal',
     'reminders',
@@ -221,9 +222,9 @@ STATIC_ROOT = os.path.join(BASE_DIR, 'staticfiles')
 MEDIA_ROOT = os.path.join(BASE_DIR, 'Media_Files/')
 MEDIA_URL = "/media_files/"
 
-# Bills attached to entries are private: never under MEDIA_ROOT, which DEBUG
-# serves to anyone. The app fetches each file through a short-lived signed
-# link (cashbook/bill_storage.py). An object store (S3, R2) takes over by
+# Bills of entries and receipts of transactions are private: never under
+# MEDIA_ROOT, which DEBUG serves to anyone. The app fetches each file through
+# a short-lived signed link (attachments/storage.py). An object store (S3, R2) takes over by
 # naming its backend and options here; no code changes.
 BILL_FILES_ROOT = config('BILL_FILES_ROOT', default=os.path.join(BASE_DIR, 'Private_Files', 'bills'))
 STORAGES = {

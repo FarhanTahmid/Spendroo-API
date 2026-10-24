@@ -1,6 +1,6 @@
 from rest_framework import serializers
 
-from .models import Transaction
+from .models import Transaction, TransactionReceipt
 
 
 class AccountTransactionSerializer(serializers.ModelSerializer):
@@ -13,13 +13,14 @@ class AccountTransactionSerializer(serializers.ModelSerializer):
     # For a transfer: the account the money went to or came from
     other_account_id = serializers.UUIDField(allow_null=True)
     other_account_name = serializers.CharField(allow_null=True)
+    has_receipt = serializers.BooleanField()
 
     class Meta:
         model = Transaction
         fields = [
             'id', 'workspace_id', 'account_id', 'category_id', 'kind', 'amount_minor', 'currency',
             'transfer_group_id', 'occurred_on', 'note', 'merchant', 'tag_ids', 'source', 'splits', 'version', 'created_at', 'updated_at',
-            'category_name', 'category_color', 'other_account_id', 'other_account_name',
+            'category_name', 'category_color', 'other_account_id', 'other_account_name', 'has_receipt',
         ]
         read_only_fields = fields
 
@@ -161,3 +162,20 @@ class GoalSummarySerializer(serializers.Serializer):
     )
     pace = serializers.ChoiceField(choices=['on_track', 'ahead', 'behind', 'no_date', 'reached'])
     is_locked = serializers.BooleanField(help_text='Nothing more goes in since a downgrade; taking money out works.')
+
+
+class TransactionReceiptSerializer(serializers.ModelSerializer):
+    """What the app shows of a receipt. Never the file's path: the file is fetched through a signed link."""
+    class Meta:
+        model = TransactionReceipt
+        fields = [
+            'id', 'workspace_id', 'transaction_id', 'created_by_id', 'content_type', 'original_name',
+            'size_bytes', 'page_count', 'width', 'height', 'version', 'server_seq', 'created_at', 'updated_at',
+            'deleted_at',
+        ]
+        read_only_fields = fields
+
+
+class ReceiptLinkSerializer(serializers.Serializer):
+    url = serializers.CharField()
+    expires_at = serializers.DateTimeField()

@@ -155,10 +155,11 @@ set_mode('log_only')
    end date, and can be claimed once.
 7. `python manage.py billing_explain <email>` matches what the app shows.
 
-## Bill attachments
+## Bill and receipt attachments
 
-Three keys hold bills (photos and PDFs on business entries) to the plan, all
-counted on the business owner:
+Three keys hold attachments to the plan: bills (photos and PDFs on business
+entries) and receipts (on personal expenses and income). Both share one
+allowance, counted on the workspace owner:
 
 | Key | Free | Plus | Business |
 |---|---|---|---|
@@ -166,22 +167,33 @@ counted on the business owner:
 | `storage.attachment_file_mb`: one file | 2 MB | 20 MB | 50 MB |
 | `storage.attachment_pdf`: PDFs too | off | on | on |
 
-Every bill goes through `cashbook/bills.py`. It checks the file by its bytes
-(`cashbook/bill_files.py`): photos are decoded and written out again, so
-EXIF/GPS and anything glued on are dropped. PDFs are read with pypdf and
-refused if they hold scripts, launch actions, embedded files or a second
-file after `%%EOF`. Nothing over 50 MB is read on any plan. Removing a bill,
-its entry or its book gives the space back at once. The file is deleted after
-the commit, and `manage.py purge_bill_files` (also a daily task) sweeps up the
-rest.
+Every attachment goes through `attachments/service.py`; each app only says
+who may attach (`cashbook/bills.py`, `ledger_personal/receipts.py`) and
+registers its model as a kind (`attachments/kinds.py`). The service checks
+the file by its bytes (`attachments/files.py`): photos are decoded and written
+out again, so EXIF/GPS and anything glued on are dropped. PDFs are read with
+pypdf and refused if they hold scripts, launch actions, embedded files or a
+second file after `%%EOF`. Nothing over 50 MB is read on any plan. Each file
+is counted under its own key in the one usage counter (`bill:<id>`,
+`receipt:<id>`). Removing a bill, its entry or its book, or a receipt or its
+transaction, gives the space back at once. The file is deleted after the
+commit, and `manage.py purge_bill_files` (also a daily task) sweeps up the
+rest of every kind.
+
+Receipts go on expenses and income only (`receipt_not_allowed` otherwise), and
+not onto an account a downgrade locked (402); removing one always works.
+Endpoints: `POST /api/v1/ledger/transactions/<id>/receipts/` (`receipt_file`,
+optional `receipt_id`), `DELETE …/receipts/<id>/`, `GET …/receipts/<id>/link/`.
+`?receipt=1|0` narrows an account's transactions and summary.
 
 Files sit in the `bills` storage (`STORAGES` in settings), never under
 `MEDIA_ROOT`. Locally that is `Private_Files/bills` (`BILL_FILES_ROOT`). An
 object store takes over with `BILL_STORAGE_BACKEND` and
 `BILL_STORAGE_OPTIONS` (JSON). Phones fetch a file through a link good for
-five minutes (`…/bills/<id>/link/`, then `/api/v1/bills/file/<token>/`), and
-the file endpoint checks again that the person may still see the book. In
-production, let the reverse proxy take bodies of 51 MB
+five minutes (`…/bills/<id>/link/` or `…/receipts/<id>/link/`, then
+`/api/v1/bills/file/<token>/`, whose token names the kind), and the file
+endpoint checks again that the person may still see the book or the ledger.
+In production, let the reverse proxy take bodies of 51 MB
 (`client_max_body_size`).
 
 ## Custom fields

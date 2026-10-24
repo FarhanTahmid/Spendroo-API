@@ -10,8 +10,8 @@ from dataclasses import dataclass
 from datetime import date
 
 from django.db.models import (
-    BigIntegerField, Case, CharField, Count, ExpressionWrapper, F, Max, Min, OuterRef, Q, Subquery, Sum, UUIDField,
-    Value, When,
+    BigIntegerField, Case, CharField, Count, Exists, ExpressionWrapper, F, Max, Min, OuterRef, Q, Subquery, Sum,
+    UUIDField, Value, When,
 )
 from django.db.models.functions import Abs, Cast
 from rest_framework.exceptions import ParseError
@@ -19,19 +19,20 @@ from rest_framework.exceptions import ParseError
 from spendroo.money import currency_exponent
 from tags.cleaning import tag_ids_matching
 from . import allocations, trends
-from .models import Transaction
+from .models import Transaction, TransactionReceipt
 
 KINDS = tuple(kind for kind, _ in Transaction.KIND_CHOICES)
 UNCATEGORISED = 'none'
 # A span longer than this is charted month by month
 SERIES_DAILY_LIMIT = 92
 MAX_QUERY_LENGTH = 100
+RECEIPT_CHOICES = {'1': True, '0': False}
 _ASCII_DIGITS = str.maketrans('০১২৩৪৫৬৭৮৯', '0123456789')
 
 
 @dataclass(frozen=True)
 class Filters:
-    """The dates set the period; kind, categories and search pick rows inside it."""
+    """The dates set the period; kind, categories, receipts and search pick rows inside it."""
     date_from: date | None = None
     date_to: date | None = None
     kind: str | None = None
@@ -39,6 +40,8 @@ class Filters:
     # Income and expenses filed under no category, alongside category_ids
     uncategorised: bool = False
     q: str = ''
+    # True: only those with a receipt; False: only those without; None: either
+    has_receipt: bool | None = None
 
     @property
     def by_category(self):
@@ -46,7 +49,7 @@ class Filters:
 
     @property
     def is_narrowed(self):
-        return bool(self.kind or self.by_category or self.q)
+        return bool(self.kind or self.by_category or self.q or self.has_receipt is not None)
 
 
 def _date(params, name):
@@ -60,7 +63,10 @@ def _date(params, name):
 
 
 def parse_filters(params):
-    """Filters from ?from&to&kind&category&q. `category` repeats or takes commas; 'none' is uncategorised."""
+    """
+    Filters from ?from&to&kind&category&receipt&q. `category` repeats or takes
+    commas; 'none' is uncategorised. `receipt` is 1 (with one) or 0 (without).
+    """
     date_from, date_to = _date(params, 'from'), _date(params, 'to')
     if date_from and date_to and date_from > date_to:
         raise ParseError('from must not be after to.')
@@ -78,8 +84,14 @@ def parse_filters(params):
                 category_ids.append(uuid.UUID(token))
             except ValueError:
                 raise ParseError(f"category must be ids or '{UNCATEGORISED}'.")
+    receipt = params.get('receipt') or None
+    if receipt is not None and receipt not in RECEIPT_CHOICES:
+        raise ParseError('receipt must be 1 or 0.')
     q = (params.get('q') or '').strip().translate(_ASCII_DIGITS)[:MAX_QUERY_LENGTH]
-    return Filters(date_from, date_to, kind, tuple(category_ids), uncategorised, q)
+    return Filters(
+        date_from, date_to, kind, tuple(category_ids), uncategorised, q,
+        has_receipt=None if receipt is None else RECEIPT_CHOICES[receipt],
+    )
 
 
 def _other_leg(field):
@@ -102,6 +114,7 @@ def account_transactions(account):
         category_color=_alive_category('color', CharField()),
         other_account_id=_other_leg('account_id'),
         other_account_name=_other_leg('account__name'),
+        has_receipt=Exists(TransactionReceipt.objects.filter(transaction=OuterRef('id'))),
     )
 
 
@@ -119,6 +132,8 @@ def _narrow(account, filters):
     condition = Q()
     if filters.kind:
         condition &= Q(kind=filters.kind)
+    if filters.has_receipt is not None:
+        condition &= Q(has_receipt=filters.has_receipt)
     if filters.by_category:
         # A split is kept when any of its parts is; _split_parts() says how much of it counts
         condition &= allocations.condition(filters.category_ids, filters.uncategorised)

@@ -1,12 +1,11 @@
 from django.core.management.base import BaseCommand
 
+from attachments.service import purge_files
 from workspaces.tenancy import bypass_tenant_context
-
-from cashbook.bills import purge_files
 
 
 class Command(BaseCommand):
-    help = 'Remove bill files no live bill holds (removed bills, rolled-back uploads). Safe to run any time.'
+    help = 'Remove bill and receipt files no live row holds (removed ones, rolled-back uploads). Safe to run any time.'
 
     def handle(self, *args, **options):
         bypass_tenant_context()
